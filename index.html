@@ -175,6 +175,7 @@ dialog .btns { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wr
       <label><input type="checkbox" id="autoSend" checked> Konuşma bitince otomatik çevir</label>
       <label><input type="checkbox" id="autoTurn" checked> Karşılıklı konuşmada dili kendiliğinden değiştir</label>
       <label><input type="checkbox" id="quietMode" checked> Bip sesini azalt (sessizlikte mikrofon bekler)</label>
+      <label><input type="checkbox" id="liveStt" checked> Anlık ses tanıma (daha hızlı, ses tanıma saatte yaklaşık 1 $)</label>
       <label><input type="checkbox" id="sttAccurate"> Daha doğru ses tanıma (daha yavaş, sesi yazıya çevirmek yaklaşık 2 sn)</label>
       <label><input type="checkbox" id="ecoMode"> Ekonomik çeviri (yaklaşık 20 kat ucuz ama zor cümlelerde hata yapabilir)</label>
     </div>
@@ -196,6 +197,8 @@ dialog .btns { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wr
     <button type="button" class="icon-btn" id="newMeet">Yeni toplantı başlat</button>
   </div>
   <div id="sumOut" class="summary" hidden></div>
+  <h2 style="margin-top:16px">Harcama</h2>
+  <div id="costBox" class="summary"></div>
   <div class="btns" style="margin-top:14px"><button type="button" class="primary" id="closeMeet">Kapat</button></div>
 </dialog>
 
@@ -313,6 +316,8 @@ dialog .btns { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wr
   $("clearBtn").onclick = () => { store.set("used", true); history = []; store.set("history", history); renderFeed(); $("setDlg").close(); };
   $("ecoMode").checked = store.get("quality", "high") === "eco";
   $("ecoMode").onchange = () => store.set("quality", $("ecoMode").checked ? "eco" : "high");
+  $("liveStt").checked = store.get("liveStt", true);
+  $("liveStt").onchange = () => store.set("liveStt", $("liveStt").checked);
   $("sttAccurate").checked = store.get("sttAccurate", false);
   $("sttAccurate").onchange = () => store.set("sttAccurate", $("sttAccurate").checked);
   for (const id of ["autoSpeak", "autoSend", "autoTurn", "quietMode"]) { $(id).checked = store.get(id, true); $(id).onchange = () => store.set(id, $(id).checked); }
@@ -325,6 +330,28 @@ dialog .btns { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wr
   let samplePromise = window.claude?.use ? window.claude.use("sample") : Promise.resolve(null);
   let queue = Promise.resolve();
   const apiKey = () => (store.get("apiKey", "") || "").trim();
+
+  // ---------- spending (estimated from token counts and audio seconds, at list prices in USD) ----------
+  const PRICES = {
+    "claude-sonnet-5-5": { in: 2 / 1e6, out: 10 / 1e6 },
+    "claude-haiku-5-5": { in: 0.1 / 1e6, out: 0.5 / 1e6 },
+    "gpt-4o-mini-transcribe": 0.003 / 60, "gpt-transcribe": 0.0045 / 60, "gpt-live-transcribe": 0.017 / 60, // per audio second
+  };
+  function addCost(provider, usd) {
+    if (!(usd > 0)) return;
+    for (const k of ["costs", "meetCosts"]) {
+      const c = store.get(k, null) || { claude: 0, openai: 0, since: new Date().toISOString().slice(0, 10) };
+      c[provider] += usd; store.set(k, c);
+    }
+    renderCosts();
+  }
+  function renderCosts() {
+    const box = document.getElementById("costBox"); if (!box) return;
+    const usd = (x) => "$" + (x || 0).toFixed(x >= 1 ? 2 : 3);
+    const line = (c) => `Claude ${usd(c.claude)} · OpenAI ${usd(c.openai)} · Toplam ${usd(c.claude + c.openai)}`;
+    const all = store.get("costs", null) || { claude: 0, openai: 0, since: "" }, meet = store.get("meetCosts", null) || { claude: 0, openai: 0 };
+    box.textContent = `Bu toplantı: ${line(meet)}\nTümü${all.since ? " (" + all.since.split("-").reverse().join(".") + " tarihinden beri)" : ""}: ${line(all)}\nTahminidir. Kesin tutar Claude ve OpenAI hesaplarınızın Billing sayfasındadır.`;
+  }
   const oaKey = () => (store.get("oaKey", "") || "").trim();
 
   async function askClaude(p, onText) {
@@ -351,7 +378,8 @@ dialog .btns { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wr
       if (!r.ok) { const data = await r.json().catch(() => ({})); throw fail(r.status, data?.error?.message); }
       // Streamed answer: show the translation as it is written instead of waiting for the end.
       const reader = r.body.getReader(), dec = new TextDecoder();
-      let buf = "", out = "", stop = "";
+      let buf = "", out = "", stop = "", inTok = 0, outTok = 0;
+      const usedModel = model();
       for (;;) {
         const { value, done } = await reader.read();
         if (done) break;
@@ -362,10 +390,12 @@ dialog .btns { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wr
           if (!line.startsWith("data:")) continue;
           let ev; try { ev = JSON.parse(line.slice(5)); } catch { continue; }
           if (ev.type === "content_block_delta" && ev.delta?.type === "text_delta") { out += ev.delta.text; onText(out); }
-          else if (ev.type === "message_delta" && ev.delta?.stop_reason) stop = ev.delta.stop_reason;
+          else if (ev.type === "message_start") inTok = ev.message?.usage?.input_tokens || 0;
+          else if (ev.type === "message_delta") { if (ev.delta?.stop_reason) stop = ev.delta.stop_reason; outTok = ev.usage?.output_tokens || outTok; }
           else if (ev.type === "error") throw fail(ev.error?.type === "overloaded_error" ? 429 : 500, ev.error?.message);
         }
       }
+      const pr = PRICES[usedModel]; if (pr) addCost("claude", inTok * pr.in + outTok * pr.out);
       if (stop === "refusal") throw { code: "api", message: "Claude bu metni çevirmeyi reddetti." };
       return out.trim();
     }
@@ -447,7 +477,7 @@ ${t}`;
   }
 
   // ---------- meeting ----------
-  $("meetBtn").onclick = () => { $("meetInfo").value = store.get("meetInfo", ""); $("formal").checked = store.get("formal", false); $("meetDlg").showModal(); };
+  $("meetBtn").onclick = () => { renderCosts(); $("meetInfo").value = store.get("meetInfo", ""); $("formal").checked = store.get("formal", false); $("meetDlg").showModal(); };
   $("meetInfo").oninput = () => store.set("meetInfo", $("meetInfo").value);
   $("formal").onchange = () => store.set("formal", $("formal").checked);
   $("closeMeet").onclick = () => $("meetDlg").close();
@@ -464,6 +494,7 @@ ${t}`;
     if (!btn.dataset.armed) { btn.dataset.armed = "1"; btn.textContent = "Konuşma silinecek. Emin misiniz? Tekrar basın"; setTimeout(() => { delete btn.dataset.armed; btn.textContent = "Yeni toplantı başlat"; }, 4000); return; }
     delete btn.dataset.armed; btn.textContent = "Yeni toplantı başlat";
     store.set("used", true); history = []; store.set("history", history); renderFeed();
+    store.set("meetCosts", { claude: 0, openai: 0 }); renderCosts();
     $("meetInfo").value = ""; store.set("meetInfo", ""); $("sumOut").hidden = true;
   };
   $("sumBtn").onclick = async () => {
@@ -564,6 +595,7 @@ ${t}`, (p) => { out.textContent = p; });
     const fd = new FormData();
     fd.append("file", blob, "speech.wav");
     const m = sttModel(); fd.append("model", m);
+    const audioSec = (blob.size - 44) / 2 / 16000;
     if (m === "gpt-transcribe") { for (const n of [srcSel.value, tgtSel.value]) { const c = byName(n).code; if (c) fd.append("languages[]", c.slice(0, 2).toLowerCase()); } }
     // No prompt hint here: on near-silent audio the light model echoes the hint back as if it were speech.
     const r = await fetch("https://api.openai.com/v1/audio/transcriptions", { method: "POST", headers: { Authorization: "Bearer " + oaKey() }, body: fd });
@@ -572,6 +604,7 @@ ${t}`, (p) => { out.textContent = p; });
       const m = data?.error?.message || ("HTTP " + r.status);
       throw { code: r.status === 401 ? "oa_bad_key" : /quota|billing|credit/i.test(m) ? "oa_no_credit" : r.status === 429 ? "rate_limited" : "oa", message: m };
     }
+    addCost("openai", audioSec * (PRICES[m] || 0));
     return (data.text || "").trim();
   }
 
@@ -599,6 +632,56 @@ ${t}`, (p) => { out.textContent = p; });
     hint.textContent = cloud?.speaking ? "🔴 Konuşma kaydediliyor…" : sttPending ? "⏳ Ses yazıya çevriliyor…" : "🎤 Dinliyorum (bipsiz). Konuşun, susunca çevrilir.";
   }
 
+  // Live transcription: audio is streamed to OpenAI while you speak, so the text is ready almost as soon as you stop.
+  // Uses the browser WebSocket sub-protocol login; the key never leaves this phone except to OpenAI itself.
+  const LIVE_MODEL = "gpt-live-transcribe";
+  function b64pcm(f32) {
+    const i16 = new Int16Array(f32.length);
+    for (let i = 0; i < f32.length; i++) { const x = Math.max(-1, Math.min(1, f32[i])); i16[i] = x < 0 ? x * 0x8000 : x * 0x7fff; }
+    const u8 = new Uint8Array(i16.buffer); let bin = "";
+    for (let i = 0; i < u8.length; i += 0x8000) bin += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000));
+    return btoa(bin);
+  }
+  function openLive(c) {
+    let ws;
+    try { ws = new WebSocket("wss://api.openai.com/v1/realtime?intent=transcription", ["realtime", "openai-insecure-api-key." + oaKey()]); }
+    catch { return; }
+    c.ws = ws; c.wsReady = false; c.pending = []; c.partial = {};
+    ws.onopen = () => {
+      const langs = [srcSel.value, tgtSel.value].map((n) => (byName(n).code || "").slice(0, 2).toLowerCase()).filter(Boolean);
+      ws.send(JSON.stringify({ type: "session.update", session: { type: "transcription", audio: { input: {
+        format: { type: "audio/pcm", rate: 24000 },
+        transcription: { model: LIVE_MODEL, ...(langs.length ? { languages: langs } : {}) },
+        turn_detection: null,
+      } } } }));
+      c.wsReady = true;
+    };
+    ws.onmessage = (m) => {
+      let ev; try { ev = JSON.parse(m.data); } catch { return; }
+      if (ev.type === "conversation.item.input_audio_transcription.delta") {
+        c.partial[ev.item_id] = (c.partial[ev.item_id] || "") + (ev.delta || "");
+        text.value = c.partial[ev.item_id]; autoGrow();
+      } else if (ev.type === "conversation.item.input_audio_transcription.completed") {
+        const job = c.pending.shift() || { tCut: Date.now(), tCommit: Date.now() };
+        delete c.partial[ev.item_id]; text.value = ""; autoGrow();
+        sttPending = Math.max(0, sttPending - 1); showCloudHint();
+        const t = (ev.transcript || "").trim();
+        if (t && !HALLUCINATIONS.test(t) && /[\p{L}\p{N}]/u.test(t)) translate(t, true, job.tCut, Date.now() - job.tCommit);
+      } else if (ev.type === "error") {
+        if (/empty|too small|buffer/i.test(ev.error?.code || ev.error?.message || "")) { if (c.pending.length) { c.pending.shift(); sttPending = Math.max(0, sttPending - 1); showCloudHint(); } return; }
+        if (/auth|key|quota|billing|permission/i.test((ev.error?.code || "") + " " + (ev.error?.message || ""))) liveFailed(c, ev.error?.message);
+      }
+    };
+    ws.onerror = () => liveFailed(c);
+    ws.onclose = () => { if (cloud === c && c.ws === ws) liveFailed(c); };
+  }
+  function liveFailed(c, why) {
+    if (!c.ws) return;
+    const ws = c.ws; c.ws = null; c.wsReady = false; try { ws.close(); } catch {}
+    sttPending = Math.max(0, sttPending - c.pending.length); c.pending = [];
+    if (cloud === c) { hint.className = "hint warn"; hint.textContent = "Anlık ses tanımaya bağlanılamadı" + (why ? " (" + why + ")" : "") + ". Normal moda geçildi, çalışmaya devam ediyor."; setTimeout(() => { if (hint.className.includes("warn")) { hint.className = "hint"; showCloudHint(); } }, 6000); }
+  }
+
   async function startCloud() {
     let stream;
     try {
@@ -616,29 +699,49 @@ ${t}`, (p) => { out.textContent = p; });
     const mute = audioCtx.createGain(); mute.gain.value = 0;
     src.connect(proc); proc.connect(mute); mute.connect(audioCtx.destination);
     const blockMs = 4096 / rate * 1000;
-    cloud = { stream, src, proc, mute, speaking: false, chunks: [], preroll: [], floor: 0, calib: 0, loud: 0, quietMs: 0, speechMs: 0 };
+    cloud = { stream, src, proc, mute, speaking: false, chunks: [], preroll: [], preroll24: [], floor: 0, calib: 0, loud: 0, quietMs: 0, speechMs: 0, ws: null, wsReady: false, live: false, liveSamples: 0 };
+    if (store.get("liveStt", true)) openLive(cloud);
+    const appendLive = (c, f32) => { c.ws.send(JSON.stringify({ type: "input_audio_buffer.append", audio: b64pcm(f32) })); c.liveSamples += f32.length; };
     proc.onaudioprocess = (ev) => {
       const c = cloud; if (!c) return;
       const data = ev.inputBuffer.getChannelData(0);
       // While the app is reading a translation aloud (and just after), ignore the microphone so it does not hear itself.
-      if (ttsActive || Date.now() - ttsEndedAt < 400) { if (c.speaking) { c.speaking = false; c.chunks = []; } c.preroll = []; return; }
+      if (ttsActive || Date.now() - ttsEndedAt < 400) {
+        if (c.speaking) { c.speaking = false; c.chunks = []; if (c.live && c.wsReady) c.ws.send(JSON.stringify({ type: "input_audio_buffer.clear" })); c.live = false; }
+        c.preroll = []; c.preroll24 = []; return;
+      }
       let sum = 0; for (let i = 0; i < data.length; i++) sum += data[i] * data[i];
       const rms = Math.sqrt(sum / data.length);
-      const pcm = downsample(data, rate, OUT);
+      const pcm = downsample(data, rate, OUT), pcm24 = c.ws ? downsample(data, rate, 24000) : null;
       if (c.calib < 5) { c.floor = Math.max(c.floor, rms); c.calib++; return; }
       const thr = Math.max(0.012, c.floor * 2.5);
       if (!c.speaking) {
         c.preroll.push(pcm); if (c.preroll.length > 3) c.preroll.shift();
+        if (pcm24) { c.preroll24.push(pcm24); if (c.preroll24.length > 3) c.preroll24.shift(); }
         c.loud = rms > thr ? c.loud + 1 : 0;
         if (rms < thr) c.floor = c.floor * 0.95 + rms * 0.05; // follow slowly changing background noise
-        if (c.loud >= 1) { c.speaking = true; c.chunks = [...c.preroll]; c.preroll = []; c.quietMs = 0; c.speechMs = 0; showCloudHint(); }
+        if (c.loud >= 1) {
+          c.speaking = true; c.chunks = [...c.preroll]; c.preroll = []; c.quietMs = 0; c.speechMs = 0;
+          c.live = !!(c.ws && c.wsReady && c.ws.readyState === 1);
+          if (c.live) { c.liveSamples = 0; c.preroll24.forEach((x) => appendLive(c, x)); }
+          c.preroll24 = []; showCloudHint();
+        }
         return;
       }
       c.chunks.push(pcm); c.speechMs += blockMs;
+      if (c.live) { if (c.ws && c.ws.readyState === 1) appendLive(c, pcm24); else c.live = false; }
       c.quietMs = rms < thr ? c.quietMs + blockMs : 0;
       if (c.quietMs >= 500 || c.speechMs >= 25000) {
         const chunks = c.chunks; c.speaking = false; c.chunks = [];
-        if (c.speechMs - c.quietMs >= 300) sendSegment(chunks, OUT);
+        const real = c.speechMs - c.quietMs >= 300;
+        if (c.live && c.ws && c.ws.readyState === 1) {
+          if (real) {
+            c.ws.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
+            c.pending.push({ tCut: Date.now(), tCommit: Date.now() }); sttPending++;
+            addCost("openai", c.liveSamples / 24000 * PRICES[LIVE_MODEL]);
+          } else c.ws.send(JSON.stringify({ type: "input_audio_buffer.clear" }));
+        } else if (real) sendSegment(chunks, OUT);
+        c.live = false;
         showCloudHint();
       }
     };
@@ -647,6 +750,7 @@ ${t}`, (p) => { out.textContent = p; });
 
   function stopCloud(keepHint = false) {
     const c = cloud; cloud = null; cloudOn = false;
+    if (c?.ws) { const ws = c.ws; c.ws = null; try { ws.close(); } catch {} }
     if (c) { c.proc.onaudioprocess = null; try { c.src.disconnect(); c.proc.disconnect(); c.mute.disconnect(); } catch {} c.stream.getTracks().forEach((t) => t.stop()); }
     mic.classList.remove("on"); keepAwake(false);
     if (!keepHint) idleHint();
