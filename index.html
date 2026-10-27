@@ -192,6 +192,7 @@ dialog .btns { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wr
     <textarea id="meetInfo" rows="4" placeholder="Örnek: Tekstil ihracatı görüşmesi. Firmamız: Eroğlu Tekstil. Konular: fiyat teklifi, FOB teslim, numune, vade."></textarea></div>
   <div class="toggles"><label><input type="checkbox" id="formal"> Resmi dil kullan (siz, vous, Sie…)</label></div>
   <div class="btns setgroup">
+    <button type="button" class="primary" id="endMeet" style="background:#b91c1c">⏹ Toplantıyı bitir</button>
     <button type="button" class="primary" id="sumBtn">Toplantı özeti çıkar</button>
     <button type="button" class="icon-btn" id="shareBtn">Konuşmayı paylaş</button>
     <button type="button" class="icon-btn" id="newMeet">Yeni toplantı başlat</button>
@@ -497,6 +498,18 @@ ${t}`;
     store.set("meetCosts", { claude: 0, openai: 0 }); renderCosts();
     $("meetInfo").value = ""; store.set("meetInfo", ""); $("sumOut").hidden = true;
   };
+  // End meeting: stop listening and speaking, let the last sentence finish translating, then write the summary.
+  $("endMeet").onclick = async () => {
+    const btn = $("endMeet");
+    if (cloudOn) stopCloud(); else if (listening) browserMicClick();
+    try { speechSynthesis.cancel(); } catch {}
+    btn.disabled = true; btn.textContent = "Son cümle bekleniyor…";
+    for (let i = 0; i < 30 && sttPending > 0; i++) await new Promise((r) => setTimeout(r, 200));
+    await new Promise((r) => setTimeout(r, 1500));
+    btn.textContent = "Toplantı bitti ✓";
+    setTimeout(() => { btn.disabled = false; btn.textContent = "⏹ Toplantıyı bitir"; }, 5000);
+    await $("sumBtn").onclick();
+  };
   $("sumBtn").onclick = async () => {
     const t = transcript(), out = $("sumOut");
     out.hidden = false;
@@ -750,7 +763,21 @@ ${t}`, (p) => { out.textContent = p; });
 
   function stopCloud(keepHint = false) {
     const c = cloud; cloud = null; cloudOn = false;
-    if (c?.ws) { const ws = c.ws; c.ws = null; try { ws.close(); } catch {} }
+    if (c?.ws) {
+      // Finish the sentence being spoken, then close once its text has arrived (at most 6 s).
+      if (c.speaking && c.live && c.ws.readyState === 1 && c.speechMs >= 300) {
+        c.ws.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
+        c.pending.push({ tCut: Date.now(), tCommit: Date.now() }); sttPending++; showCloudHint();
+        addCost("openai", c.liveSamples / 24000 * PRICES[LIVE_MODEL]);
+      }
+      const ws = c.ws, t0 = Date.now();
+      const tryClose = () => {
+        if (c.pending.length && Date.now() - t0 < 6000) return setTimeout(tryClose, 200);
+        sttPending = Math.max(0, sttPending - c.pending.length); c.pending = []; c.ws = null;
+        try { ws.close(); } catch {}
+      };
+      tryClose();
+    }
     if (c) { c.proc.onaudioprocess = null; try { c.src.disconnect(); c.proc.disconnect(); c.mute.disconnect(); } catch {} c.stream.getTracks().forEach((t) => t.stop()); }
     mic.classList.remove("on"); keepAwake(false);
     if (!keepHint) idleHint();
