@@ -56,6 +56,8 @@ header { padding-block: 14px 8px; display: flex; flex-wrap: wrap; align-items: c
 .hbtns { display: flex; flex-wrap: wrap; gap: 6px; }
 h1 { font-family: var(--font-display); font-weight: 800; font-size: 1.5rem; margin: 0; letter-spacing: -0.01em; }
 h1 span { color: var(--me); }
+.unsure { color: #b45309; font-size: 0.85rem; font-weight: 600; }
+@media (prefers-color-scheme: dark) { .unsure { color: #fbbf24; } }
 .costbar { display: block; width: 100%; text-align: left; background: none; border: 0; border-bottom: 1px solid var(--line); color: var(--muted, #555); font: inherit; font-size: 0.85rem; padding: 4px 16px 6px; cursor: pointer; }
 .icon-btn { background: none; border: 1px solid var(--line); color: var(--ink); border-radius: 10px; padding: 8px 12px; font: inherit; font-size: 0.9rem; cursor: pointer; }
 .icon-btn:focus-visible, button:focus-visible, select:focus-visible, textarea:focus-visible, input:focus-visible { outline: 3px solid var(--me); outline-offset: 2px; }
@@ -291,13 +293,15 @@ dialog .btns { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wr
     if (item.timing) { const t = document.createElement("span"); t.className = "timing"; t.textContent = "⏱ " + item.timing; meta.append(t); }
     const orig = document.createElement("div"); orig.className = "orig"; orig.textContent = item.orig;
     const tr = document.createElement("div"); tr.className = "tr";
+    const warn = document.createElement("div"); warn.className = "unsure"; warn.hidden = !item.unsure;
+    warn.textContent = "⚠ Ses net anlaşılmadı, bu çeviri tahmindir. Gerekirse tekrar söyletin.";
     const acts = document.createElement("div"); acts.className = "acts";
     const speakB = document.createElement("button"); speakB.type = "button"; speakB.textContent = "🔊 Oku";
     speakB.onclick = () => speak(item.tr, item.tgt);
     const copyB = document.createElement("button"); copyB.type = "button"; copyB.textContent = "Kopyala";
     copyB.onclick = () => { navigator.clipboard?.writeText(item.tr).then(() => { copyB.textContent = "Kopyalandı"; }, () => { copyB.textContent = "Kopyalanamadı"; }); };
     acts.append(speakB, copyB);
-    div.append(meta, orig, tr, acts);
+    div.append(meta, orig, tr, warn, acts);
     div._update = () => {
       tr.className = "tr" + (item.error ? " err" : item.tr ? "" : " pending");
       tr.textContent = item.error || item.tr || "Çevriliyor…";
@@ -421,7 +425,8 @@ Keep the meaning, tone and register; translate naturally as a native speaker wou
 Be careful about who does what to whom: keep subject and object roles exactly as in the original, including with verbs whose roles flip between languages.
 Use the same translation for a term every time it comes up in this conversation.
 ${store.get("formal", false) ? "Use formal, polite address in the translation (for example siz in Turkish, vous in French, Sie in German, usted in Spanish).\n" : ""}${info ? `\nMeeting notes from the user (topic, names, special terms):\n${info}\n` : ""}${recent ? `\nConversation so far, for context only (do not translate it again):\n${recent}\n` : ""}
-Reply with JSON only, no other text: {"from": "${srcL.en}" or "${tgtL.en}", "translation": "..."}
+If the recognized text is too garbled to be sure what was said and you had to guess, still give your best translation but add "unsure": true.
+Reply with JSON only, no other text: {"from": "${srcL.en}" or "${tgtL.en}", "translation": "...", "unsure": false}
 
 Text to translate now:
 ${t}`;
@@ -437,7 +442,8 @@ Keep the meaning, tone and register; translate naturally as a native speaker wou
 Be careful about who does what to whom: keep subject and object roles exactly as in the original, including with verbs whose roles flip between languages.
 Use the same translation for a term every time it comes up in this conversation.
 ${store.get("formal", false) ? "Use formal, polite address in the translation (for example siz in Turkish, vous in French, Sie in German, usted in Spanish).\n" : ""}${info ? `\nMeeting notes from the user (topic, names, special terms):\n${info}\n` : ""}${recent ? `\nConversation so far, for context only (do not translate it again):\n${recent}\n` : ""}
-Reply with JSON only, no other text: {"from": "<English name of the text's language>", "fromCode": "<its BCP-47 code, e.g. fr-FR>", "translation": "..."}
+If the recognized text is too garbled to be sure what was said and you had to guess, still give your best translation but add "unsure": true.
+Reply with JSON only, no other text: {"from": "<English name of the text's language>", "fromCode": "<its BCP-47 code, e.g. fr-FR>", "translation": "...", "unsure": false}
 
 Text to translate now:
 ${t}`;
@@ -453,7 +459,7 @@ ${t}`;
       const j = JSON.parse(raw.slice(raw.indexOf("{"), raw.lastIndexOf("}") + 1));
       if (j && typeof j.translation === "string") {
         const from = findLang(j.from, j.fromCode);
-        return { tr: j.translation.trim(), from, to: from.name === "Türkçe" ? tgtL : tr };
+        return { tr: j.translation.trim(), from, to: from.name === "Türkçe" ? tgtL : tr, unsure: j.unsure === true };
       }
     } catch {}
     return { tr: raw.trim(), from: tr, to: tgtL };
@@ -463,7 +469,7 @@ ${t}`;
       const j = JSON.parse(raw.slice(raw.indexOf("{"), raw.lastIndexOf("}") + 1));
       if (j && typeof j.translation === "string") {
         const reversed = j.from === tgtL.en;
-        return { tr: j.translation.trim(), from: reversed ? tgtL : srcL, to: reversed ? srcL : tgtL };
+        return { tr: j.translation.trim(), from: reversed ? tgtL : srcL, to: reversed ? srcL : tgtL, unsure: j.unsure === true };
       }
     } catch {}
     return { tr: raw.trim(), from: srcL, to: tgtL };
@@ -499,7 +505,7 @@ ${t}`;
         const res = isMulti ? parseMulti(raw, srcL.name === "Türkçe" ? tgtL : srcL) : parseReply(raw, srcL, tgtL);
         // Multi: whoever spoke a foreign language last is who your Turkish goes to next.
         if (isMulti && res.from.name !== "Türkçe" && langs().some((l) => l.name === res.from.name)) { srcSel.value = "Türkçe"; tgtSel.value = res.from.name; saveLangs(); }
-        item.tr = res.tr; item.src = res.from.name; item.tgt = res.to.name;
+        item.tr = res.tr; item.src = res.from.name; item.tgt = res.to.name; item.unsure = res.unsure;
         const sec = (ms) => (ms / 1000).toFixed(1);
         item.timing = (sttMs ? "ses→yazı " + sec(sttMs) + " · " : "") + "çeviri " + sec(Date.now() - tTr) + " · toplam " + sec(Date.now() - t0) + " sn";
         item.side = isMulti ? (res.from.name === "Türkçe" ? "me" : "them") : res.from.name === "Türkçe" || (res.to.name !== "Türkçe" && res.from === srcL) ? "me" : "them";
