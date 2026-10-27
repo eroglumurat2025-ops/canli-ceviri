@@ -103,6 +103,8 @@ dialog { border: 1px solid var(--line); border-radius: 16px; background: var(--s
 dialog::backdrop { background: rgb(0 0 0 / 0.4); }
 dialog h2 { font-family: var(--font-display); font-size: 1.2rem; margin: 0 0 10px; }
 dialog .row { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; font-size: 0.95rem; color: var(--muted); }
+dialog textarea { width: 100%; max-height: none; }
+.summary { white-space: pre-wrap; margin-top: 14px; padding: 12px; border-radius: 12px; background: var(--bg); border: 1px solid var(--line); overflow-wrap: anywhere; }
 dialog input { font: inherit; font-size: 1rem; padding: 8px 10px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); }
 dialog .btns { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
 .primary { background: var(--me); color: var(--surface); border: none; border-radius: 10px; padding: 9px 14px; font: inherit; font-weight: 700; cursor: pointer; }
@@ -117,6 +119,7 @@ dialog .btns { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wr
   <div class="hbtns">
     <button class="icon-btn" id="smaller" type="button" aria-label="Yazıyı küçült">A−</button>
     <button class="icon-btn" id="bigger" type="button" aria-label="Yazıyı büyüt"><b>A+</b></button>
+    <button class="icon-btn" id="meetBtn" type="button">Toplantı</button>
     <button class="icon-btn" id="setBtn" type="button">Ayarlar</button>
   </div>
 </header>
@@ -179,6 +182,20 @@ dialog .btns { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wr
       <button type="button" class="icon-btn" id="clearBtn">Konuşmaları temizle</button>
     </div>
     <div class="btns" style="margin-top:14px"><button type="button" class="primary" id="closeSet">Kapat</button></div>
+</dialog>
+
+<dialog id="meetDlg">
+  <h2>Toplantı</h2>
+  <div class="row"><label for="meetInfo">Toplantının konusu, şirket ve kişi adları, özel terimler. Claude çeviride bunları kullanır.</label>
+    <textarea id="meetInfo" rows="4" placeholder="Örnek: Tekstil ihracatı görüşmesi. Firmamız: Eroğlu Tekstil. Konular: fiyat teklifi, FOB teslim, numune, vade."></textarea></div>
+  <div class="toggles"><label><input type="checkbox" id="formal"> Resmi dil kullan (siz, vous, Sie…)</label></div>
+  <div class="btns setgroup">
+    <button type="button" class="primary" id="sumBtn">Toplantı özeti çıkar</button>
+    <button type="button" class="icon-btn" id="shareBtn">Konuşmayı paylaş</button>
+    <button type="button" class="icon-btn" id="newMeet">Yeni toplantı başlat</button>
+  </div>
+  <div id="sumOut" class="summary" hidden></div>
+  <div class="btns" style="margin-top:14px"><button type="button" class="primary" id="closeMeet">Kapat</button></div>
 </dialog>
 
 <script>
@@ -355,15 +372,19 @@ dialog .btns { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wr
   }
 
   // Two-way prompt: Claude decides which of the two selected languages the text is in and translates into the other.
-  function prompt(srcL, tgtL, t) {
-    return `You are a live interpreter in a two-way conversation between ${srcL.en} and ${tgtL.en}.
+  function prompt(srcL, tgtL, t, context) {
+    const info = (store.get("meetInfo", "") || "").trim();
+    const recent = context.map((h) => `- (${h.src}) ${h.orig}\n  → (${h.tgt}) ${h.tr}`).join("\n");
+    return `You are a professional live interpreter in a two-way conversation between ${srcL.en} and ${tgtL.en}${info ? ", for example in a business meeting" : ""}.
 The text below is most likely ${srcL.en}, but it may be ${tgtL.en}. Decide which of the two it is, then translate it into the other one.
-The text may come from speech recognition, so fix obvious recognition mistakes and missing punctuation silently.
-Keep the meaning, tone and register; translate naturally as a native speaker would say it.
+The text may come from speech recognition, so fix obvious recognition mistakes and missing punctuation silently, using the conversation so far and the meeting notes to work out what was meant.
+Keep the meaning, tone and register; translate naturally as a native speaker would say it. Keep names, numbers, prices, dates and units exact.
 Be careful about who does what to whom: keep subject and object roles exactly as in the original, including with verbs whose roles flip between languages.
+Use the same translation for a term every time it comes up in this conversation.
+${store.get("formal", false) ? "Use formal, polite address in the translation (for example siz in Turkish, vous in French, Sie in German, usted in Spanish).\n" : ""}${info ? `\nMeeting notes from the user (topic, names, special terms):\n${info}\n` : ""}${recent ? `\nConversation so far, for context only (do not translate it again):\n${recent}\n` : ""}
 Reply with JSON only, no other text: {"from": "${srcL.en}" or "${tgtL.en}", "translation": "..."}
 
-Text:
+Text to translate now:
 ${t}`;
   }
   function parseReply(raw, srcL, tgtL) {
@@ -395,7 +416,8 @@ ${t}`;
     const el = bubble(item); feed.append(el); feed.scrollTop = feed.scrollHeight;
     queue = queue.then(async () => {
       try {
-        const raw = await askClaude(prompt(srcL, tgtL, orig), (partial) => {
+        const context = history.filter((h) => h !== item && h.tr && !h.error).slice(-8);
+        const raw = await askClaude(prompt(srcL, tgtL, orig, context), (partial) => {
           const m = partial.match(/"translation"\s*:\s*"((?:[^"\\]|\\.)*)/);
           if (!m) return;
           try { item.tr = JSON.parse('"' + m[1].replace(/\\$/, "") + '"'); } catch { return; }
@@ -417,6 +439,47 @@ ${t}`;
       }
     });
   }
+
+  // ---------- meeting ----------
+  $("meetBtn").onclick = () => { $("meetInfo").value = store.get("meetInfo", ""); $("formal").checked = store.get("formal", false); $("meetDlg").showModal(); };
+  $("meetInfo").oninput = () => store.set("meetInfo", $("meetInfo").value);
+  $("formal").onchange = () => store.set("formal", $("formal").checked);
+  $("closeMeet").onclick = () => $("meetDlg").close();
+  const transcript = () => history.filter((h) => h.tr && !h.error)
+    .map((h) => `${h.side === "me" ? "Ben" : "Karşı taraf"} (${h.src}): ${h.orig}\n→ (${h.tgt}): ${h.tr}`).join("\n\n");
+  $("shareBtn").onclick = async () => {
+    const t = transcript(); if (!t) return;
+    try { if (navigator.share) { await navigator.share({ title: "Toplantı konuşması", text: t }); return; } } catch (e) { if (e?.name === "AbortError") return; }
+    try { await navigator.clipboard.writeText(t); $("shareBtn").textContent = "Kopyalandı"; } catch { $("shareBtn").textContent = "Paylaşılamadı"; }
+  };
+  $("newMeet").onclick = () => {
+    // Two taps: the first only asks, so a meeting is not wiped by accident.
+    const btn = $("newMeet");
+    if (!btn.dataset.armed) { btn.dataset.armed = "1"; btn.textContent = "Konuşma silinecek. Emin misiniz? Tekrar basın"; setTimeout(() => { delete btn.dataset.armed; btn.textContent = "Yeni toplantı başlat"; }, 4000); return; }
+    delete btn.dataset.armed; btn.textContent = "Yeni toplantı başlat";
+    history = []; store.set("history", history); renderFeed();
+    $("meetInfo").value = ""; store.set("meetInfo", ""); $("sumOut").hidden = true;
+  };
+  $("sumBtn").onclick = async () => {
+    const t = transcript(), out = $("sumOut");
+    out.hidden = false;
+    if (!t) { out.textContent = "Henüz özetlenecek bir konuşma yok."; return; }
+    out.textContent = "Özet hazırlanıyor…";
+    const info = (store.get("meetInfo", "") || "").trim();
+    try {
+      out.textContent = await askClaude(`Below is the transcript of a meeting held through a live interpreter app, with each turn in its original language and its translation.${info ? `\nMeeting notes from the user: ${info}` : ""}
+Write a summary in Turkish for the user, in plain text without markdown symbols, with these headings:
+Özet: (3-5 sentences)
+Alınan kararlar: (bullet lines starting with "• ", or "Yok")
+Yapılacaklar: (bullet lines starting with "• ", with who does it if known, or "Yok")
+Önemli rakamlar ve tarihler: (bullet lines, or "Yok")
+
+Transcript:
+${t}`, (p) => { out.textContent = p; });
+    } catch (e) {
+      out.textContent = ERRORS[e?.code] || "Özet çıkarılamadı: " + (e?.message || "bilinmeyen hata");
+    }
+  };
 
   // ---------- settings ----------
   $("setBtn").onclick = () => { $("apiKey").value = apiKey(); $("oaKey").value = oaKey(); $("setDlg").showModal(); };
