@@ -1,0 +1,433 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#2346d8">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Canlı Çeviri">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="icon" href="icon-192.png">
+<title>Canlı Çeviri</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&display=swap">
+<style>
+:root { padding-top: env(safe-area-inset-top, 0px); }
+body { margin: 0; }
+[hidden] { display: none !important; }
+/* Layout: one-screen phone app — header, scrolling conversation feed, sticky composer at the bottom */
+:root {
+  --bg: #f3f5f9;
+  --surface: #ffffff;
+  --ink: #141a2b;
+  --muted: #5d6680;
+  --line: #dde2ec;
+  --me: #2346d8;
+  --me-soft: #e6ebff;
+  --them: #b4570f;
+  --them-soft: #fbeedd;
+  --danger: #b3261e;
+  --font-display: "Bricolage Grotesque", "Avenir Next", system-ui, sans-serif;
+  --font-body: "Atkinson Hyperlegible", system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f1320; --surface: #181e30; --ink: #e9ecf5; --muted: #9aa3bd; --line: #2a3250;
+    --me: #8ea2ff; --me-soft: #1f2a55; --them: #f0a35e; --them-soft: #3a2a1a; --danger: #ff8a80;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0f1320; --surface: #181e30; --ink: #e9ecf5; --muted: #9aa3bd; --line: #2a3250;
+  --me: #8ea2ff; --me-soft: #1f2a55; --them: #f0a35e; --them-soft: #3a2a1a; --danger: #ff8a80;
+  color-scheme: dark;
+}
+html, body { height: 100%; }
+body {
+  background: var(--bg); color: var(--ink);
+  font-family: var(--font-body); font-size: 16px; line-height: 1.45;
+  display: flex; flex-direction: column;
+}
+.wrap { width: 100%; max-width: 720px; margin: 0 auto; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); box-sizing: border-box; }
+header { padding-block: 14px 8px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+h1 { font-family: var(--font-display); font-weight: 800; font-size: 1.5rem; margin: 0; letter-spacing: -0.01em; }
+h1 span { color: var(--me); }
+.icon-btn { background: none; border: 1px solid var(--line); color: var(--ink); border-radius: 10px; padding: 8px 12px; font: inherit; font-size: 0.9rem; cursor: pointer; }
+.icon-btn:focus-visible, button:focus-visible, select:focus-visible, textarea:focus-visible, input:focus-visible { outline: 3px solid var(--me); outline-offset: 2px; }
+
+#feed { flex: 1; overflow-y: auto; padding-block: 8px 16px; display: flex; flex-direction: column; gap: 12px; }
+.empty-note { color: var(--muted); font-size: 0.9rem; text-align: center; padding: 4px 0; }
+.bubble { max-width: 88%; border-radius: 16px; padding: 10px 14px; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.bubble.me { align-self: flex-end; background: var(--me-soft); border-bottom-right-radius: 4px; }
+.bubble.them { align-self: flex-start; background: var(--them-soft); border-bottom-left-radius: 4px; }
+.bubble .meta { font-size: 0.72rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); display: flex; gap: 8px; align-items: center; }
+.bubble .meta b { color: var(--me); font-weight: 700; }
+.bubble.them .meta b { color: var(--them); }
+.bubble .orig { color: var(--muted); font-size: 0.95rem; overflow-wrap: anywhere; }
+.bubble .tr { font-size: 1.25rem; font-weight: 700; overflow-wrap: anywhere; white-space: pre-wrap; }
+.bubble .tr.pending { color: var(--muted); font-weight: 400; font-style: italic; }
+.bubble .tr.err { color: var(--danger); font-size: 0.95rem; font-weight: 400; }
+.bubble .acts { display: flex; gap: 6px; margin-top: 2px; }
+.bubble .acts button { background: var(--surface); border: 1px solid var(--line); color: var(--ink); border-radius: 999px; padding: 4px 10px; font: inherit; font-size: 0.8rem; cursor: pointer; }
+.sample-tag { background: var(--line); color: var(--muted); border-radius: 999px; padding: 1px 8px; font-size: 0.65rem; }
+
+.composer { background: var(--surface); border-top: 1px solid var(--line); padding-block: 10px calc(10px + env(safe-area-inset-bottom, 0px)); }
+.langs { display: grid; grid-template-columns: 1fr auto 1fr; gap: 8px; align-items: center; }
+.langs label { display: flex; flex-direction: column; gap: 2px; font-size: 0.7rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); min-width: 0; }
+.langs label.me-l { color: var(--me); }
+.langs label.them-l { color: var(--them); }
+select { font: inherit; font-size: 1rem; padding: 8px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); width: 100%; min-width: 0; }
+#swap { font-size: 1.2rem; padding: 8px 12px; align-self: end; }
+.inputrow { display: flex; gap: 8px; margin-top: 10px; align-items: flex-end; }
+textarea { flex: 1; min-width: 0; font: inherit; font-size: 1.05rem; padding: 10px 12px; border-radius: 14px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); resize: none; min-height: 48px; max-height: 140px; box-sizing: border-box; }
+.round { width: 52px; height: 52px; border-radius: 50%; border: none; cursor: pointer; font-size: 1.4rem; display: grid; place-items: center; flex: none; }
+#mic { background: var(--them-soft); color: var(--them); }
+#mic.on { background: var(--danger); color: #fff; animation: pulse 1.2s infinite; }
+#send { background: var(--me); color: var(--surface); }
+@keyframes pulse { 50% { transform: scale(1.08); } }
+@media (prefers-reduced-motion: reduce) { #mic.on { animation: none; } }
+.toggles { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 8px; font-size: 0.85rem; color: var(--muted); }
+.toggles label { display: flex; gap: 6px; align-items: center; cursor: pointer; }
+.hint { font-size: 0.82rem; color: var(--muted); margin-top: 6px; }
+.hint.warn { color: var(--danger); }
+
+dialog { border: 1px solid var(--line); border-radius: 16px; background: var(--surface); color: var(--ink); padding: 18px; width: min(92vw, 440px); box-sizing: border-box; }
+dialog::backdrop { background: rgb(0 0 0 / 0.4); }
+dialog h2 { font-family: var(--font-display); font-size: 1.2rem; margin: 0 0 10px; }
+dialog .row { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; font-size: 0.85rem; color: var(--muted); }
+dialog input { font: inherit; font-size: 1rem; padding: 8px 10px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); }
+dialog .btns { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
+.primary { background: var(--me); color: var(--surface); border: none; border-radius: 10px; padding: 9px 14px; font: inherit; font-weight: 700; cursor: pointer; }
+#langList { list-style: none; padding: 0; margin: 0 0 12px; display: flex; flex-wrap: wrap; gap: 6px; }
+#langList li { background: var(--bg); border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px; font-size: 0.85rem; display: flex; gap: 6px; align-items: center; }
+#langList button { background: none; border: none; color: var(--danger); cursor: pointer; font: inherit; padding: 0; }
+</style>
+</head>
+<body>
+<header class="wrap">
+  <h1>Canlı <span>Çeviri</span></h1>
+  <div style="display:flex;gap:8px">
+    <button class="icon-btn" id="clearBtn" type="button">Temizle</button>
+    <button class="icon-btn" id="langBtn" type="button">+ Dil</button>
+    <button class="icon-btn" id="setBtn" type="button">Ayarlar</button>
+  </div>
+</header>
+
+<main id="feed" class="wrap" aria-live="polite"></main>
+
+<section class="composer">
+  <div class="wrap">
+    <div class="langs">
+      <label class="me-l" for="srcSel">Konuşan
+        <select id="srcSel"></select>
+      </label>
+      <button class="icon-btn" id="swap" type="button" aria-label="Dilleri değiştir">⇄</button>
+      <label class="them-l" for="tgtSel">Çeviri
+        <select id="tgtSel"></select>
+      </label>
+    </div>
+    <form class="inputrow" id="form">
+      <button class="round" id="mic" type="button" aria-label="Mikrofonla dinle" hidden>🎤</button>
+      <textarea id="text" rows="1" placeholder="Yazın ya da klavyedeki mikrofonla konuşun"></textarea>
+      <button class="round" id="send" type="submit" aria-label="Çevir">➤</button>
+    </form>
+    <div class="toggles">
+      <label><input type="checkbox" id="autoSpeak" checked> Çeviriyi sesli oku</label>
+      <label><input type="checkbox" id="autoSend" checked> Konuşma bitince otomatik çevir</label>
+    </div>
+    <p class="hint" id="hint"></p>
+  </div>
+</section>
+
+<dialog id="langDlg">
+  <h2>Diller</h2>
+  <ul id="langList"></ul>
+  <form id="addLang" method="dialog">
+    <div class="row"><label for="newName">Dil adı (ör. Almanca, Japonca)</label><input id="newName" required></div>
+    <div class="row"><label for="newCode">Ses kodu, isteğe bağlı (ör. de-DE, ja-JP)</label><input id="newCode" placeholder="boş bırakılabilir"></div>
+    <div class="btns">
+      <button type="button" class="icon-btn" id="closeDlg">Kapat</button>
+      <button type="submit" class="primary">Dili ekle</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="setDlg">
+  <h2>Ayarlar</h2>
+  <form id="setForm" method="dialog">
+    <div class="row"><label for="apiKey">Claude API anahtarı (sk-ant-… ile başlar)</label><input id="apiKey" type="password" autocomplete="off" spellcheck="false" placeholder="sk-ant-..."></div>
+    <p class="hint">Anahtar sadece bu telefonda saklanır, başka hiçbir yere gönderilmez; yalnızca çeviri için doğrudan Claude'a gider.</p>
+    <div class="btns">
+      <button type="button" class="icon-btn" id="delKey">Anahtarı sil</button>
+      <button type="submit" class="primary">Kaydet</button>
+    </div>
+  </form>
+</dialog>
+
+<script>
+(() => {
+  // Languages: add a line here to ship a new one. "name" goes to Claude, "code" drives speech in/out.
+  const BASE_LANGS = [
+    { name: "Türkçe", en: "Turkish", code: "tr-TR" },
+    { name: "İngilizce", en: "English", code: "en-US" },
+    { name: "Fransızca", en: "French", code: "fr-FR" },
+    { name: "Çince", en: "Chinese (Simplified)", code: "zh-CN" },
+    { name: "Almanca", en: "German", code: "de-DE" },
+    { name: "İspanyolca", en: "Spanish", code: "es-ES" },
+    { name: "Arapça", en: "Arabic", code: "ar-SA" },
+    { name: "Rusça", en: "Russian", code: "ru-RU" },
+  ];
+
+  const store = {
+    get(k, d) { try { const v = localStorage.getItem("cc_" + k); return v == null ? d : JSON.parse(v); } catch { return d; } },
+    set(k, v) { try { localStorage.setItem("cc_" + k, JSON.stringify(v)); } catch {} },
+  };
+
+  const $ = (id) => document.getElementById(id);
+  const feed = $("feed"), text = $("text"), srcSel = $("srcSel"), tgtSel = $("tgtSel"), hint = $("hint"), mic = $("mic");
+
+  let customLangs = store.get("custom", []);
+  let history = store.get("history", []);
+  const langs = () => [...BASE_LANGS, ...customLangs];
+  const byName = (n) => langs().find((l) => l.name === n) || { name: n, en: n, code: "" };
+
+  // ---------- languages UI ----------
+  function fillSelects() {
+    const s = srcSel.value || store.get("src", "Türkçe");
+    const t = tgtSel.value || store.get("tgt", "İngilizce");
+    for (const sel of [srcSel, tgtSel]) {
+      sel.textContent = "";
+      for (const l of langs()) { const o = document.createElement("option"); o.value = l.name; o.textContent = l.name; sel.append(o); }
+    }
+    srcSel.value = langs().some((l) => l.name === s) ? s : "Türkçe";
+    tgtSel.value = langs().some((l) => l.name === t) ? t : "İngilizce";
+  }
+  function saveLangs() { store.set("src", srcSel.value); store.set("tgt", tgtSel.value); if (rec) { rec.lang = byName(srcSel.value).code || "tr-TR"; if (listening) rec.stop(); } }
+  srcSel.onchange = tgtSel.onchange = saveLangs;
+  $("swap").onclick = () => { const a = srcSel.value; srcSel.value = tgtSel.value; tgtSel.value = a; saveLangs(); };
+
+  function renderLangList() {
+    const ul = $("langList"); ul.textContent = "";
+    for (const l of langs()) {
+      const li = document.createElement("li"); li.textContent = l.name;
+      if (customLangs.includes(l)) {
+        const b = document.createElement("button"); b.type = "button"; b.textContent = "✕"; b.setAttribute("aria-label", l.name + " dilini sil");
+        b.onclick = () => { customLangs = customLangs.filter((x) => x !== l); store.set("custom", customLangs); fillSelects(); renderLangList(); };
+        li.append(b);
+      }
+      ul.append(li);
+    }
+  }
+  $("langBtn").onclick = () => { renderLangList(); $("langDlg").showModal(); };
+  $("closeDlg").onclick = () => $("langDlg").close();
+  $("addLang").onsubmit = (e) => {
+    e.preventDefault();
+    const name = $("newName").value.trim(); if (!name) return;
+    if (!langs().some((l) => l.name.toLowerCase() === name.toLowerCase())) {
+      customLangs.push({ name, en: name, code: $("newCode").value.trim() });
+      store.set("custom", customLangs);
+    }
+    $("newName").value = ""; $("newCode").value = "";
+    fillSelects(); renderLangList(); tgtSel.value = name; saveLangs();
+  };
+
+  // ---------- feed ----------
+  const SAMPLES = [
+    { side: "me", src: "Türkçe", tgt: "İngilizce", orig: "Merhaba, en yakın eczane nerede?", tr: "Hello, where is the nearest pharmacy?", sample: true },
+    { side: "them", src: "İngilizce", tgt: "Türkçe", orig: "It's two streets down, on the left.", tr: "İki sokak aşağıda, solda.", sample: true },
+  ];
+  function bubble(item) {
+    const div = document.createElement("div");
+    div.className = "bubble " + item.side;
+    const meta = document.createElement("div"); meta.className = "meta";
+    const who = document.createElement("b"); who.textContent = item.side === "me" ? "Ben" : "Karşı taraf";
+    const dir = document.createElement("span"); dir.textContent = item.src + " → " + item.tgt;
+    meta.append(who, dir);
+    if (item.sample) { const t = document.createElement("span"); t.className = "sample-tag"; t.textContent = "örnek"; meta.append(t); }
+    const orig = document.createElement("div"); orig.className = "orig"; orig.textContent = item.orig;
+    const tr = document.createElement("div"); tr.className = "tr";
+    const acts = document.createElement("div"); acts.className = "acts";
+    const speakB = document.createElement("button"); speakB.type = "button"; speakB.textContent = "🔊 Oku";
+    speakB.onclick = () => speak(item.tr, item.tgt);
+    const copyB = document.createElement("button"); copyB.type = "button"; copyB.textContent = "Kopyala";
+    copyB.onclick = () => { navigator.clipboard?.writeText(item.tr).then(() => { copyB.textContent = "Kopyalandı"; }, () => { copyB.textContent = "Kopyalanamadı"; }); };
+    acts.append(speakB, copyB);
+    div.append(meta, orig, tr, acts);
+    div._update = () => {
+      tr.className = "tr" + (item.error ? " err" : item.tr ? "" : " pending");
+      tr.textContent = item.error || item.tr || "Çevriliyor…";
+      acts.hidden = !item.tr || !!item.error;
+    };
+    div._update();
+    return div;
+  }
+  function renderFeed() {
+    feed.textContent = "";
+    if (!history.length) {
+      const n = document.createElement("p"); n.className = "empty-note";
+      n.textContent = "Konuşmalar burada görünecek. Aşağıda iki örnek var.";
+      feed.append(n);
+      SAMPLES.forEach((s) => feed.append(bubble(s)));
+    } else history.forEach((h) => feed.append(bubble(h)));
+    feed.scrollTop = feed.scrollHeight;
+  }
+  $("clearBtn").onclick = () => { history = []; store.set("history", history); renderFeed(); };
+
+  // ---------- translation (Claude, on the viewer's own Claude account) ----------
+  // Translation engine: the user's own Claude API key if set; inside claude.ai, the viewer's Claude account.
+  const MODEL = "claude-haiku-5-5";
+  let samplePromise = window.claude?.use ? window.claude.use("sample") : Promise.resolve(null);
+  let queue = Promise.resolve();
+  const apiKey = () => (store.get("apiKey", "") || "").trim();
+
+  async function askClaude(p, onText) {
+    const key = apiKey();
+    if (key) {
+      const r = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-api-key": key,
+          "anthropic-version": "2026-10-21",
+          "anthropic-dangerous-direct-browser-access": "true",
+        },
+        body: JSON.stringify({
+          model: MODEL, max_tokens: 2000,
+          thinking: { type: "disabled" }, output_config: { effort: "low" },
+          messages: [{ role: "user", content: p }],
+        }),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        const code = r.status === 401 ? "bad_key" : r.status === 429 ? "rate_limited" : r.status === 402 || /credit|billing/i.test(data?.error?.message || "") ? "no_credit" : "api";
+        throw { code, message: data?.error?.message || ("HTTP " + r.status) };
+      }
+      if (data.stop_reason === "refusal") throw { code: "api", message: "Claude bu metni çevirmeyi reddetti." };
+      return (data.content || []).filter((b) => b.type === "text").map((b) => b.text).join("").trim();
+    }
+    const sample = await samplePromise;
+    if (!sample) throw { code: "no_key" };
+    const res = await sample(p, { modelTier: "quick", onText: ({ text: t }) => onText(t) });
+    return res.text.trim();
+  }
+
+  function prompt(srcL, tgtL, t) {
+    return `You are a live interpreter. Translate the text below from ${srcL.en} into ${tgtL.en}.
+The text may come from speech recognition, so fix obvious recognition mistakes and missing punctuation silently.
+Keep the meaning, tone and register; translate naturally as a native speaker would say it.
+Output ONLY the translation, with no quotes, notes or explanations.
+
+Text:
+${t}`;
+  }
+
+  const ERRORS = {
+    no_key: "Çeviri için API anahtarı gerekli. Üstteki Ayarlar düğmesinden anahtarınızı girin.",
+    bad_key: "API anahtarı geçersiz. Ayarlar'dan anahtarı kontrol edin.",
+    no_credit: "API hesabınızda bakiye kalmamış olabilir. console.anthropic.com > Billing bölümünden bakiye yükleyin.",
+    not_granted: "Claude'a izin verilmedi. Sayfayı yenileyip izni onaylayın.",
+    rate_limited: "Çok hızlı istek gönderildi ya da kullanım sınırına gelindi. Biraz bekleyip tekrar deneyin.",
+  };
+
+  function translate(orig) {
+    orig = orig.trim(); if (!orig) return;
+    if (!history.length) feed.textContent = "";
+    const srcL = byName(srcSel.value), tgtL = byName(tgtSel.value);
+    const item = { side: srcSel.value === "Türkçe" || tgtSel.value !== "Türkçe" ? "me" : "them", src: srcL.name, tgt: tgtL.name, orig, tr: "" };
+    history.push(item); if (history.length > 200) history.shift();
+    const el = bubble(item); feed.append(el); feed.scrollTop = feed.scrollHeight;
+    queue = queue.then(async () => {
+      try {
+        item.tr = await askClaude(prompt(srcL, tgtL, orig), (t) => { item.tr = t; el._update(); feed.scrollTop = feed.scrollHeight; });
+        el._update();
+        store.set("history", history);
+        if ($("autoSpeak").checked) speak(item.tr, tgtL.name);
+      } catch (e) {
+        item.error = ERRORS[e?.code] || (e instanceof TypeError ? "İnternet bağlantısı yok ya da Claude'a ulaşılamadı." : "Çeviri yapılamadı: " + (e?.message || "bilinmeyen hata"));
+        el._update();
+      }
+    });
+  }
+
+  // ---------- settings ----------
+  $("setBtn").onclick = () => { $("apiKey").value = apiKey(); $("setDlg").showModal(); };
+  $("setForm").onsubmit = (e) => { e.preventDefault(); store.set("apiKey", $("apiKey").value.trim()); $("setDlg").close(); updateKeyHint(); };
+  $("delKey").onclick = () => { store.set("apiKey", ""); $("apiKey").value = ""; updateKeyHint(); };
+  function updateKeyHint() { $("setBtn").textContent = apiKey() ? "Ayarlar" : "Ayarlar ⚠"; }
+
+  $("form").onsubmit = (e) => { e.preventDefault(); clearTimeout(autoTimer); const t = text.value; text.value = ""; store.set("draft", ""); autoGrow(); translate(t); };
+  text.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("form").requestSubmit(); } });
+
+  // Keyboard dictation: when the text stops changing for a moment, translate it.
+  let autoTimer;
+  function autoGrow() { text.style.height = "auto"; text.style.height = Math.min(text.scrollHeight, 140) + "px"; }
+  text.addEventListener("input", () => {
+    autoGrow(); store.set("draft", text.value);
+    clearTimeout(autoTimer);
+    if ($("autoSend").checked && text.value.trim()) autoTimer = setTimeout(() => $("form").requestSubmit(), 1800);
+  });
+
+  // ---------- speech out ----------
+  function speak(t, langName) {
+    if (!("speechSynthesis" in window) || !t) return;
+    try {
+      speechSynthesis.cancel();
+      const u = new SpeechSynthesisUtterance(t);
+      const code = byName(langName).code; if (code) u.lang = code;
+      const v = speechSynthesis.getVoices().find((v) => code && v.lang.replace("_", "-").toLowerCase().startsWith(code.slice(0, 2).toLowerCase()));
+      if (v) u.voice = v;
+      if (listening) { ttsActive = true; try { rec.abort(); } catch {} }
+      u.onend = u.onerror = () => { ttsActive = false; if (listening) { try { rec.start(); } catch {} } };
+      speechSynthesis.speak(u);
+    } catch {}
+  }
+
+  // ---------- speech in (browser speech recognition, where the page is allowed the mic) ----------
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  let rec = null, listening = false, ttsActive = false, wakeLock = null;
+  async function keepAwake(on) {
+    try {
+      if (on && "wakeLock" in navigator) wakeLock = await navigator.wakeLock.request("screen");
+      else if (!on && wakeLock) { await wakeLock.release(); wakeLock = null; }
+    } catch {}
+  }
+  document.addEventListener("visibilitychange", () => { if (listening && document.visibilityState === "visible") keepAwake(true); });
+  const DICTATION_HINT = "Konuşmak için yazı kutusuna dokunun ve telefon klavyesindeki 🎤 tuşuna basın. Siz durunca çeviri kendiliğinden yapılır.";
+  if (SR) {
+    rec = new SR(); rec.continuous = true; rec.interimResults = true; rec.lang = byName(store.get("src", "Türkçe")).code || "tr-TR";
+    mic.hidden = false;
+    rec.onresult = (e) => {
+      let interim = "";
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const r = e.results[i];
+        if (r.isFinal) { text.value = ""; translate(r[0].transcript); } else interim += r[0].transcript;
+      }
+      if (interim) text.value = interim;
+      autoGrow();
+    };
+    rec.onerror = (e) => {
+      if (e.error === "not-allowed" || e.error === "service-not-allowed" || e.error === "audio-capture") {
+        listening = false; mic.classList.remove("on"); mic.hidden = true;
+        hint.className = "hint warn"; hint.textContent = "Bu ekranda mikrofon açılamadı. " + DICTATION_HINT;
+      }
+    };
+    rec.onend = () => { if (listening && !ttsActive) { setTimeout(() => { if (listening && !ttsActive) { try { rec.start(); } catch {} } }, 150); } else if (!listening) mic.classList.remove("on"); };
+    mic.onclick = () => {
+      if (listening) { listening = false; rec.stop(); keepAwake(false); mic.classList.remove("on"); hint.className = "hint"; hint.textContent = ""; return; }
+      listening = true; mic.classList.add("on"); keepAwake(true);
+      try { rec.start(); hint.className = "hint"; hint.textContent = "Dinliyorum… Sırayla konuşun; karşı taraf konuşacağı zaman ⇄ tuşuna basın. Durdurmak için 🎤."; } catch {}
+    };
+  }
+  if (!SR) hint.textContent = DICTATION_HINT;
+  else hint.textContent = "Sürekli dinlemek için 🎤 tuşuna basın.";
+
+  fillSelects(); saveLangs(); updateKeyHint();
+  if ("serviceWorker" in navigator && location.protocol === "https:") navigator.serviceWorker.register("sw.js").catch(() => {});
+  text.value = store.get("draft", ""); autoGrow();
+  renderFeed();
+})();
+</script>
+</body>
+</html>
