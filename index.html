@@ -190,7 +190,8 @@ dialog .btns { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wr
   <h2>Toplantı</h2>
   <div class="row"><label for="meetInfo">Toplantının konusu, şirket ve kişi adları, özel terimler. Claude çeviride bunları kullanır.</label>
     <textarea id="meetInfo" rows="4" placeholder="Örnek: Tekstil ihracatı görüşmesi. Firmamız: Eroğlu Tekstil. Konular: fiyat teklifi, FOB teslim, numune, vade."></textarea></div>
-  <div class="toggles"><label><input type="checkbox" id="formal"> Resmi dil kullan (siz, vous, Sie…)</label></div>
+  <div class="toggles"><label><input type="checkbox" id="formal"> Resmi dil kullan (siz, vous, Sie…)</label>
+    <label><input type="checkbox" id="multi"> Çok dilli toplantı: yabancı dil kim konuşursa konuşsun Türkçeye çevrilir. Siz Türkçe konuşunca, en son konuşan kişinin diline çevrilir (aşağıdaki "Çeviri" kutusunda görünür, elle de değiştirebilirsiniz).</label></div>
   <div class="btns setgroup">
     <button type="button" class="primary" id="endMeet" style="background:#b91c1c">⏹ Toplantıyı bitir</button>
     <button type="button" class="primary" id="sumBtn">Toplantı özeti çıkar</button>
@@ -422,6 +423,38 @@ Reply with JSON only, no other text: {"from": "${srcL.en}" or "${tgtL.en}", "tra
 Text to translate now:
 ${t}`;
   }
+  // Many-language meeting: the user speaks Turkish; anyone else may speak any language.
+  function promptMulti(tgtL, t, context) {
+    const info = (store.get("meetInfo", "") || "").trim();
+    const recent = context.map((h) => `- (${h.src}) ${h.orig}\n  → (${h.tgt}) ${h.tr}`).join("\n");
+    return `You are a professional live interpreter in a business meeting where several languages are spoken. The user speaks Turkish; the other participants may speak any language.
+First decide which language the text below is in. If it is Turkish, translate it into ${tgtL.en}. If it is any other language, translate it into Turkish.
+The text may come from speech recognition, so fix obvious recognition mistakes and missing punctuation silently, using the conversation so far and the meeting notes to work out what was meant.
+Keep the meaning, tone and register; translate naturally as a native speaker would say it. Keep names, numbers, prices, dates and units exact.
+Be careful about who does what to whom: keep subject and object roles exactly as in the original, including with verbs whose roles flip between languages.
+Use the same translation for a term every time it comes up in this conversation.
+${store.get("formal", false) ? "Use formal, polite address in the translation (for example siz in Turkish, vous in French, Sie in German, usted in Spanish).\n" : ""}${info ? `\nMeeting notes from the user (topic, names, special terms):\n${info}\n` : ""}${recent ? `\nConversation so far, for context only (do not translate it again):\n${recent}\n` : ""}
+Reply with JSON only, no other text: {"from": "<English name of the text's language>", "fromCode": "<its BCP-47 code, e.g. fr-FR>", "translation": "..."}
+
+Text to translate now:
+${t}`;
+  }
+  function findLang(en, code) {
+    const l = langs().find((x) => x.en.toLowerCase() === (en || "").toLowerCase())
+      || (code ? langs().find((x) => x.code && x.code.slice(0, 2).toLowerCase() === code.slice(0, 2).toLowerCase()) : null);
+    return l || { name: en || "?", en: en || "?", code: code || "" };
+  }
+  function parseMulti(raw, tgtL) {
+    const tr = byName("Türkçe");
+    try {
+      const j = JSON.parse(raw.slice(raw.indexOf("{"), raw.lastIndexOf("}") + 1));
+      if (j && typeof j.translation === "string") {
+        const from = findLang(j.from, j.fromCode);
+        return { tr: j.translation.trim(), from, to: from.name === "Türkçe" ? tgtL : tr };
+      }
+    } catch {}
+    return { tr: raw.trim(), from: tr, to: tgtL };
+  }
   function parseReply(raw, srcL, tgtL) {
     try {
       const j = JSON.parse(raw.slice(raw.indexOf("{"), raw.lastIndexOf("}") + 1));
@@ -453,23 +486,26 @@ ${t}`;
       try {
         const tTr = Date.now();
         const context = history.filter((h) => h !== item && h.tr && !h.error).slice(-8);
-        const raw = await askClaude(prompt(srcL, tgtL, orig, context), (partial) => {
+        const isMulti = multi();
+        const raw = await askClaude(isMulti ? promptMulti(srcL.name === "Türkçe" ? tgtL : srcL, orig, context) : prompt(srcL, tgtL, orig, context), (partial) => {
           const m = partial.match(/"translation"\s*:\s*"((?:[^"\\]|\\.)*)/);
           if (!m) return;
           try { item.tr = JSON.parse('"' + m[1].replace(/\\$/, "") + '"'); } catch { return; }
           el._update(); feed.scrollTop = feed.scrollHeight;
         });
-        const res = parseReply(raw, srcL, tgtL);
+        const res = isMulti ? parseMulti(raw, srcL.name === "Türkçe" ? tgtL : srcL) : parseReply(raw, srcL, tgtL);
+        // Multi: whoever spoke a foreign language last is who your Turkish goes to next.
+        if (isMulti && res.from.name !== "Türkçe" && langs().some((l) => l.name === res.from.name)) { srcSel.value = "Türkçe"; tgtSel.value = res.from.name; saveLangs(); }
         item.tr = res.tr; item.src = res.from.name; item.tgt = res.to.name;
         const sec = (ms) => (ms / 1000).toFixed(1);
         item.timing = (sttMs ? "ses→yazı " + sec(sttMs) + " · " : "") + "çeviri " + sec(Date.now() - tTr) + " · toplam " + sec(Date.now() - t0) + " sn";
-        item.side = res.from.name === "Türkçe" || (res.to.name !== "Türkçe" && res.from === srcL) ? "me" : "them";
+        item.side = isMulti ? (res.from.name === "Türkçe" ? "me" : "them") : res.from.name === "Türkçe" || (res.to.name !== "Türkçe" && res.from === srcL) ? "me" : "them";
         el.replaceWith(bubble(item));
         store.set("history", history);
         // Speak first, then swap: the recognizer is paused while speaking, so the swap needs no extra restart (each restart beeps on Android).
         if ($("autoSpeak").checked) speak(item.tr, res.to.name);
         // Turn-taking: after one side speaks, listen for the other side's language next.
-        if (fromSpeech && !cloudOn && $("autoTurn").checked && srcSel.value === res.from.name) swapLangs();
+        if (fromSpeech && !isMulti && !cloudOn && $("autoTurn").checked && srcSel.value === res.from.name) swapLangs();
       } catch (e) {
         item.error = ERRORS[e?.code] || (e instanceof TypeError ? "İnternet bağlantısı yok ya da Claude'a ulaşılamadı." : "Çeviri yapılamadı: " + (e?.message || "bilinmeyen hata"));
         el._update();
@@ -481,6 +517,13 @@ ${t}`;
   $("meetBtn").onclick = () => { renderCosts(); $("meetInfo").value = store.get("meetInfo", ""); $("formal").checked = store.get("formal", false); $("meetDlg").showModal(); };
   $("meetInfo").oninput = () => store.set("meetInfo", $("meetInfo").value);
   $("formal").onchange = () => store.set("formal", $("formal").checked);
+  const multi = () => store.get("multi", false);
+  $("multi").checked = multi();
+  $("multi").onchange = () => {
+    store.set("multi", $("multi").checked);
+    if (multi() && srcSel.value !== "Türkçe") { if (tgtSel.value === "Türkçe") tgtSel.value = srcSel.value; srcSel.value = "Türkçe"; saveLangs(); }
+    if (cloudOn) { stopCloud(true); startCloud(); } // reconnect so speech recognition stops expecting only two languages
+  };
   $("closeMeet").onclick = () => $("meetDlg").close();
   const transcript = () => history.filter((h) => h.tr && !h.error)
     .map((h) => `${h.side === "me" ? "Ben" : "Karşı taraf"} (${h.src}): ${h.orig}\n→ (${h.tgt}): ${h.tr}`).join("\n\n");
@@ -609,7 +652,7 @@ ${t}`, (p) => { out.textContent = p; });
     fd.append("file", blob, "speech.wav");
     const m = sttModel(); fd.append("model", m);
     const audioSec = (blob.size - 44) / 2 / 16000;
-    if (m === "gpt-transcribe") { for (const n of [srcSel.value, tgtSel.value]) { const c = byName(n).code; if (c) fd.append("languages[]", c.slice(0, 2).toLowerCase()); } }
+    if (m === "gpt-transcribe" && !multi()) { for (const n of [srcSel.value, tgtSel.value]) { const c = byName(n).code; if (c) fd.append("languages[]", c.slice(0, 2).toLowerCase()); } }
     // No prompt hint here: on near-silent audio the light model echoes the hint back as if it were speech.
     const r = await fetch("https://api.openai.com/v1/audio/transcriptions", { method: "POST", headers: { Authorization: "Bearer " + oaKey() }, body: fd });
     const data = await r.json().catch(() => ({}));
@@ -661,7 +704,7 @@ ${t}`, (p) => { out.textContent = p; });
     catch { return; }
     c.ws = ws; c.wsReady = false; c.pending = []; c.partial = {};
     ws.onopen = () => {
-      const langs = [srcSel.value, tgtSel.value].map((n) => (byName(n).code || "").slice(0, 2).toLowerCase()).filter(Boolean);
+      const langs = multi() ? [] : [srcSel.value, tgtSel.value].map((n) => (byName(n).code || "").slice(0, 2).toLowerCase()).filter(Boolean);
       ws.send(JSON.stringify({ type: "session.update", session: { type: "transcription", audio: { input: {
         format: { type: "audio/pcm", rate: 24000 },
         transcription: { model: LIVE_MODEL, ...(langs.length ? { languages: langs } : {}) },
