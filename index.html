@@ -194,6 +194,8 @@ dialog .btns { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wr
     <textarea id="meetInfo" rows="4" placeholder="Örnek: Tekstil ihracatı görüşmesi. Firmamız: Eroğlu Tekstil. Konular: fiyat teklifi, FOB teslim, numune, vade."></textarea></div>
   <div class="toggles"><label><input type="checkbox" id="formal"> Resmi dil kullan (siz, vous, Sie…)</label>
     <label><input type="checkbox" id="multi"> Çok dilli toplantı: yabancı dil kim konuşursa konuşsun Türkçeye çevrilir. Siz Türkçe konuşunca, en son konuşan kişinin diline çevrilir (aşağıdaki "Çeviri" kutusunda görünür, elle de değiştirebilirsiniz).</label></div>
+  <div id="meetLangsBox" class="row" hidden><label>Toplantıda konuşulacak diller (ses tanıma sadece bunları bekler, böylece aksanlı konuşma başka dil sanılmaz):</label>
+    <div id="meetLangs" class="toggles"></div></div>
   <div class="btns setgroup">
     <button type="button" class="primary" id="endMeet" style="background:#b91c1c">⏹ Toplantıyı bitir</button>
     <button type="button" class="primary" id="sumBtn">Toplantı özeti çıkar</button>
@@ -245,7 +247,7 @@ dialog .btns { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wr
     tgtSel.value = langs().some((l) => l.name === t) ? t : "İngilizce";
   }
   function saveLangs() { store.set("src", srcSel.value); store.set("tgt", tgtSel.value); if (rec) { rec.lang = byName(srcSel.value).code || "tr-TR"; if (listening) { showListening(); if (!ttsActive && recRunning) rec.stop(); } } }
-  srcSel.onchange = tgtSel.onchange = saveLangs;
+  srcSel.onchange = tgtSel.onchange = () => { saveLangs(); if (cloud && !multi()) liveSession(cloud); };
   function swapLangs() { const a = srcSel.value; srcSel.value = tgtSel.value; tgtSel.value = a; saveLangs(); }
   $("swap").onclick = swapLangs;
 
@@ -431,8 +433,8 @@ ${t}`;
   function promptMulti(tgtL, t, context) {
     const info = (store.get("meetInfo", "") || "").trim();
     const recent = context.map((h) => `- (${h.src}) ${h.orig}\n  → (${h.tgt}) ${h.tr}`).join("\n");
-    return `You are a professional live interpreter in a business meeting where several languages are spoken. The user speaks Turkish; the other participants may speak any language.
-First decide which language the text below is in. If it is Turkish, translate it into ${tgtL.en}. If it is any other language, translate it into Turkish.
+    return `You are a professional live interpreter in a business meeting where several languages are spoken. The user speaks Turkish; the other participants speak ${meetLangs().filter((l) => l.name !== "Türkçe").map((l) => l.en).join(", ") || "other languages"}, possibly with a strong accent.
+First decide which language the text below is in. Speech recognition may have garbled accented speech; if the text looks like a mix, work out what the speaker most likely said in one of the meeting languages. If it is Turkish, translate it into ${tgtL.en}. If it is any other language, translate it into Turkish.
 The text may come from speech recognition, so fix obvious recognition mistakes and missing punctuation silently, using the conversation so far and the meeting notes to work out what was meant.
 Keep the meaning, tone and register; translate naturally as a native speaker would say it. Keep names, numbers, prices, dates and units exact.
 Be careful about who does what to whom: keep subject and object roles exactly as in the original, including with verbs whose roles flip between languages.
@@ -518,14 +520,32 @@ ${t}`;
   }
 
   // ---------- meeting ----------
-  $("meetBtn").onclick = () => { renderCosts(); $("meetInfo").value = store.get("meetInfo", ""); $("formal").checked = store.get("formal", false); $("meetDlg").showModal(); };
+  $("meetBtn").onclick = () => { renderCosts(); renderMeetLangs(); $("meetInfo").value = store.get("meetInfo", ""); $("formal").checked = store.get("formal", false); $("meetDlg").showModal(); };
   $("costBar").onclick = () => $("meetBtn").click(); renderCosts();
   $("meetInfo").oninput = () => store.set("meetInfo", $("meetInfo").value);
   $("formal").onchange = () => store.set("formal", $("formal").checked);
   const multi = () => store.get("multi", false);
+  // Languages spoken in a many-language meeting; Turkish is always included.
+  const meetLangs = () => { const sel = store.get("meetLangs", ["İngilizce", "Fransızca"]); return langs().filter((l) => l.name === "Türkçe" || sel.includes(l.name)); };
+  function renderMeetLangs() {
+    $("meetLangsBox").hidden = !multi();
+    const box = $("meetLangs"); box.textContent = "";
+    const sel = store.get("meetLangs", ["İngilizce", "Fransızca"]);
+    for (const l of langs()) {
+      if (l.name === "Türkçe") continue;
+      const lab = document.createElement("label"), cb = document.createElement("input");
+      cb.type = "checkbox"; cb.checked = sel.includes(l.name);
+      cb.onchange = () => {
+        const now = store.get("meetLangs", ["İngilizce", "Fransızca"]).filter((n) => n !== l.name);
+        if (cb.checked) now.push(l.name);
+        store.set("meetLangs", now); if (cloud) liveSession(cloud);
+      };
+      lab.append(cb, " " + l.name); box.append(lab);
+    }
+  }
   $("multi").checked = multi();
   $("multi").onchange = () => {
-    store.set("multi", $("multi").checked);
+    store.set("multi", $("multi").checked); renderMeetLangs();
     if (multi() && srcSel.value !== "Türkçe") { if (tgtSel.value === "Türkçe") tgtSel.value = srcSel.value; srcSel.value = "Türkçe"; saveLangs(); }
     if (cloudOn) { stopCloud(true); startCloud(); } // reconnect so speech recognition stops expecting only two languages
   };
@@ -658,7 +678,7 @@ ${t}`, (p) => { out.textContent = p; });
     fd.append("file", blob, "speech.wav");
     const m = sttModel(); fd.append("model", m);
     const audioSec = (blob.size - 44) / 2 / 16000;
-    if (m === "gpt-transcribe" && !multi()) { for (const n of [srcSel.value, tgtSel.value]) { const c = byName(n).code; if (c) fd.append("languages[]", c.slice(0, 2).toLowerCase()); } }
+    if (m === "gpt-transcribe") for (const c of sttLangs()) fd.append("languages[]", c);
     // No prompt hint here: on near-silent audio the light model echoes the hint back as if it were speech.
     const r = await fetch("https://api.openai.com/v1/audio/transcriptions", { method: "POST", headers: { Authorization: "Bearer " + oaKey() }, body: fd });
     const data = await r.json().catch(() => ({}));
@@ -704,18 +724,28 @@ ${t}`, (p) => { out.textContent = p; });
     for (let i = 0; i < u8.length; i += 0x8000) bin += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000));
     return btoa(bin);
   }
+  // Languages the speech recognizer should expect. Two-way: the two selected ones. Multi: every language in the list,
+  // so accented speech is not mistaken for a language nobody in the meeting speaks (e.g. accented French heard as Arabic).
+  function sttLangs() {
+    const names = multi() ? meetLangs().map((l) => l.name) : [srcSel.value, tgtSel.value];
+    return [...new Set(names.map((n) => (byName(n).code || "").slice(0, 2).toLowerCase()).filter(Boolean))];
+  }
+  function liveSession(c) {
+    if (!c?.ws || c.ws.readyState !== 1) return;
+    const langs = sttLangs();
+    c.ws.send(JSON.stringify({ type: "session.update", session: { type: "transcription", audio: { input: {
+      format: { type: "audio/pcm", rate: 24000 },
+      transcription: { model: LIVE_MODEL, ...(langs.length ? { languages: langs } : {}) },
+      turn_detection: null,
+    } } } }));
+  }
   function openLive(c) {
     let ws;
     try { ws = new WebSocket("wss://api.openai.com/v1/realtime?intent=transcription", ["realtime", "openai-insecure-api-key." + oaKey()]); }
     catch { return; }
     c.ws = ws; c.wsReady = false; c.pending = []; c.partial = {};
     ws.onopen = () => {
-      const langs = multi() ? [] : [srcSel.value, tgtSel.value].map((n) => (byName(n).code || "").slice(0, 2).toLowerCase()).filter(Boolean);
-      ws.send(JSON.stringify({ type: "session.update", session: { type: "transcription", audio: { input: {
-        format: { type: "audio/pcm", rate: 24000 },
-        transcription: { model: LIVE_MODEL, ...(langs.length ? { languages: langs } : {}) },
-        turn_detection: null,
-      } } } }));
+      liveSession(c);
       c.wsReady = true;
     };
     ws.onmessage = (m) => {
