@@ -172,6 +172,7 @@ dialog .btns { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wr
       <label><input type="checkbox" id="autoSend" checked> Konuşma bitince otomatik çevir</label>
       <label><input type="checkbox" id="autoTurn" checked> Karşılıklı konuşmada dili kendiliğinden değiştir</label>
       <label><input type="checkbox" id="quietMode" checked> Bip sesini azalt (sessizlikte mikrofon bekler)</label>
+      <label><input type="checkbox" id="ecoMode"> Ekonomik çeviri (yaklaşık 20 kat ucuz ama zor cümlelerde hata yapabilir)</label>
     </div>
     <div class="btns setgroup">
       <button type="button" class="icon-btn" id="langBtn">Dil ekle / sil</button>
@@ -291,11 +292,15 @@ dialog .btns { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wr
     feed.scrollTop = feed.scrollHeight;
   }
   $("clearBtn").onclick = () => { history = []; store.set("history", history); renderFeed(); $("setDlg").close(); };
+  $("ecoMode").checked = store.get("quality", "high") === "eco";
+  $("ecoMode").onchange = () => store.set("quality", $("ecoMode").checked ? "eco" : "high");
   for (const id of ["autoSpeak", "autoSend", "autoTurn", "quietMode"]) { $(id).checked = store.get(id, true); $(id).onchange = () => store.set(id, $(id).checked); }
 
   // ---------- translation (Claude, on the viewer's own Claude account) ----------
   // Translation engine: the user's own Claude API key if set; inside claude.ai, the viewer's Claude account.
-  const MODEL = "claude-haiku-5-5";
+  // Quality setting: Sonnet translates tricky sentences correctly (e.g. "Seni özledim" → "Tu me manques"); Haiku is ~20x cheaper.
+  const MODELS = { high: "claude-sonnet-5-5", eco: "claude-haiku-5-5" };
+  const model = () => MODELS[store.get("quality", "high")] || MODELS.high;
   let samplePromise = window.claude?.use ? window.claude.use("sample") : Promise.resolve(null);
   let queue = Promise.resolve();
   const apiKey = () => (store.get("apiKey", "") || "").trim();
@@ -313,8 +318,8 @@ dialog .btns { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wr
           "anthropic-dangerous-direct-browser-access": "true",
         },
         body: JSON.stringify({
-          model: MODEL, max_tokens: 2000, stream: true,
-          thinking: { type: "disabled" }, output_config: { effort: "low" },
+          model: model(), max_tokens: 2000, stream: true,
+          thinking: { type: model() === MODELS.high ? "between_tools" : "disabled" }, output_config: { effort: "low" },
           messages: [{ role: "user", content: p }],
         }),
       });
@@ -355,6 +360,7 @@ dialog .btns { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wr
 The text below is most likely ${srcL.en}, but it may be ${tgtL.en}. Decide which of the two it is, then translate it into the other one.
 The text may come from speech recognition, so fix obvious recognition mistakes and missing punctuation silently.
 Keep the meaning, tone and register; translate naturally as a native speaker would say it.
+Be careful about who does what to whom: keep subject and object roles exactly as in the original, including with verbs whose roles flip between languages.
 Reply with JSON only, no other text: {"from": "${srcL.en}" or "${tgtL.en}", "translation": "..."}
 
 Text:
