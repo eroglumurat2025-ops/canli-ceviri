@@ -96,6 +96,7 @@ textarea { flex: 1; min-width: 0; font: inherit; font-size: 1.05rem; padding: 10
 .setgroup { margin: 14px 0 0; padding-top: 14px; border-top: 1px solid var(--line); justify-content: flex-start; flex-direction: column; align-items: flex-start; }
 .hint { font-size: 0.95rem; color: var(--muted); margin-top: 6px; }
 .hint.warn { color: var(--danger); }
+.hint.listening { color: var(--ink); font-weight: 700; font-size: 1.05rem; }
 
 dialog { border: 1px solid var(--line); border-radius: 16px; background: var(--surface); color: var(--ink); padding: 18px; width: min(92vw, 440px); box-sizing: border-box; }
 dialog::backdrop { background: rgb(0 0 0 / 0.4); }
@@ -167,6 +168,7 @@ dialog .btns { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wr
     <div class="toggles setgroup">
       <label><input type="checkbox" id="autoSpeak" checked> Çeviriyi sesli oku</label>
       <label><input type="checkbox" id="autoSend" checked> Konuşma bitince otomatik çevir</label>
+      <label><input type="checkbox" id="autoTurn" checked> Karşılıklı konuşmada dili kendiliğinden değiştir</label>
     </div>
     <div class="btns setgroup">
       <button type="button" class="icon-btn" id="langBtn">Dil ekle / sil</button>
@@ -213,9 +215,10 @@ dialog .btns { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wr
     srcSel.value = langs().some((l) => l.name === s) ? s : "Türkçe";
     tgtSel.value = langs().some((l) => l.name === t) ? t : "İngilizce";
   }
-  function saveLangs() { store.set("src", srcSel.value); store.set("tgt", tgtSel.value); if (rec) { rec.lang = byName(srcSel.value).code || "tr-TR"; if (listening) rec.stop(); } }
+  function saveLangs() { store.set("src", srcSel.value); store.set("tgt", tgtSel.value); if (rec) { rec.lang = byName(srcSel.value).code || "tr-TR"; if (listening) { showListening(); if (!ttsActive) rec.stop(); } } }
   srcSel.onchange = tgtSel.onchange = saveLangs;
-  $("swap").onclick = () => { const a = srcSel.value; srcSel.value = tgtSel.value; tgtSel.value = a; saveLangs(); };
+  function swapLangs() { const a = srcSel.value; srcSel.value = tgtSel.value; tgtSel.value = a; saveLangs(); }
+  $("swap").onclick = swapLangs;
 
   function renderLangList() {
     const ul = $("langList"); ul.textContent = "";
@@ -283,7 +286,7 @@ dialog .btns { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wr
     feed.scrollTop = feed.scrollHeight;
   }
   $("clearBtn").onclick = () => { history = []; store.set("history", history); renderFeed(); $("setDlg").close(); };
-  for (const id of ["autoSpeak", "autoSend"]) { $(id).checked = store.get(id, true); $(id).onchange = () => store.set(id, $(id).checked); }
+  for (const id of ["autoSpeak", "autoSend", "autoTurn"]) { $(id).checked = store.get(id, true); $(id).onchange = () => store.set(id, $(id).checked); }
 
   // ---------- translation (Claude, on the viewer's own Claude account) ----------
   // Translation engine: the user's own Claude API key if set; inside claude.ai, the viewer's Claude account.
@@ -323,14 +326,26 @@ dialog .btns { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wr
     return res.text.trim();
   }
 
+  // Two-way prompt: Claude decides which of the two selected languages the text is in and translates into the other.
   function prompt(srcL, tgtL, t) {
-    return `You are a live interpreter. Translate the text below from ${srcL.en} into ${tgtL.en}.
+    return `You are a live interpreter in a two-way conversation between ${srcL.en} and ${tgtL.en}.
+The text below is most likely ${srcL.en}, but it may be ${tgtL.en}. Decide which of the two it is, then translate it into the other one.
 The text may come from speech recognition, so fix obvious recognition mistakes and missing punctuation silently.
 Keep the meaning, tone and register; translate naturally as a native speaker would say it.
-Output ONLY the translation, with no quotes, notes or explanations.
+Reply with JSON only, no other text: {"from": "${srcL.en}" or "${tgtL.en}", "translation": "..."}
 
 Text:
 ${t}`;
+  }
+  function parseReply(raw, srcL, tgtL) {
+    try {
+      const j = JSON.parse(raw.slice(raw.indexOf("{"), raw.lastIndexOf("}") + 1));
+      if (j && typeof j.translation === "string") {
+        const reversed = j.from === tgtL.en;
+        return { tr: j.translation.trim(), from: reversed ? tgtL : srcL, to: reversed ? srcL : tgtL };
+      }
+    } catch {}
+    return { tr: raw.trim(), from: srcL, to: tgtL };
   }
 
   const ERRORS = {
@@ -341,7 +356,7 @@ ${t}`;
     rate_limited: "Çok hızlı istek gönderildi ya da kullanım sınırına gelindi. Biraz bekleyip tekrar deneyin.",
   };
 
-  function translate(orig) {
+  function translate(orig, fromSpeech = false) {
     orig = orig.trim(); if (!orig) return;
     if (!history.length) feed.textContent = "";
     const srcL = byName(srcSel.value), tgtL = byName(tgtSel.value);
@@ -350,10 +365,15 @@ ${t}`;
     const el = bubble(item); feed.append(el); feed.scrollTop = feed.scrollHeight;
     queue = queue.then(async () => {
       try {
-        item.tr = await askClaude(prompt(srcL, tgtL, orig), (t) => { item.tr = t; el._update(); feed.scrollTop = feed.scrollHeight; });
-        el._update();
+        const raw = await askClaude(prompt(srcL, tgtL, orig), () => {});
+        const res = parseReply(raw, srcL, tgtL);
+        item.tr = res.tr; item.src = res.from.name; item.tgt = res.to.name;
+        item.side = res.from.name === "Türkçe" || (res.to.name !== "Türkçe" && res.from === srcL) ? "me" : "them";
+        el.replaceWith(bubble(item));
         store.set("history", history);
-        if ($("autoSpeak").checked) speak(item.tr, tgtL.name);
+        // Turn-taking: after one side speaks, listen for the other side's language next.
+        if (fromSpeech && $("autoTurn").checked && srcSel.value === res.from.name) swapLangs();
+        if ($("autoSpeak").checked) speak(item.tr, res.to.name);
       } catch (e) {
         item.error = ERRORS[e?.code] || (e instanceof TypeError ? "İnternet bağlantısı yok ya da Claude'a ulaşılamadı." : "Çeviri yapılamadı: " + (e?.message || "bilinmeyen hata"));
         el._update();
@@ -409,14 +429,18 @@ ${t}`;
   if (SR) {
     rec = new SR(); rec.continuous = true; rec.interimResults = true; rec.lang = byName(store.get("src", "Türkçe")).code || "tr-TR";
     mic.hidden = false;
+    let spoken = "", turnTimer;
+    const flushTurn = () => { clearTimeout(turnTimer); const t = spoken; spoken = ""; text.value = ""; autoGrow(); translate(t, true); };
     rec.onresult = (e) => {
       let interim = "";
       for (let i = e.resultIndex; i < e.results.length; i++) {
         const r = e.results[i];
-        if (r.isFinal) { text.value = ""; translate(r[0].transcript); } else interim += r[0].transcript;
+        if (r.isFinal) spoken += (spoken ? " " : "") + r[0].transcript.trim(); else interim += r[0].transcript;
       }
-      if (interim) text.value = interim;
+      text.value = (spoken + " " + interim).trim();
       autoGrow();
+      clearTimeout(turnTimer);
+      if (spoken && !interim) turnTimer = setTimeout(flushTurn, 1200);
     };
     rec.onerror = (e) => {
       if (e.error === "not-allowed" || e.error === "service-not-allowed" || e.error === "audio-capture") {
@@ -428,8 +452,12 @@ ${t}`;
     mic.onclick = () => {
       if (listening) { listening = false; rec.stop(); keepAwake(false); mic.classList.remove("on"); hint.className = "hint"; hint.textContent = ""; return; }
       listening = true; mic.classList.add("on"); keepAwake(true);
-      try { rec.start(); hint.className = "hint"; hint.textContent = "Dinliyorum… Sırayla konuşun; karşı taraf konuşacağı zaman ⇄ tuşuna basın. Durdurmak için 🎤."; } catch {}
+      try { rec.start(); showListening(); } catch {}
     };
+  }
+  function showListening() {
+    hint.className = "hint listening";
+    hint.textContent = "🎤 Şimdi dinlenen dil: " + srcSel.value + ". Yanlışsa ⇄ tuşuna basın.";
   }
   if (!SR) hint.textContent = DICTATION_HINT;
   else hint.textContent = "Sürekli dinlemek için 🎤 tuşuna basın.";
