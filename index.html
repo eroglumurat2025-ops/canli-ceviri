@@ -460,20 +460,47 @@ ${t}`;
   if (SR) {
     rec = new SR(); rec.continuous = true; rec.interimResults = true; rec.lang = byName(store.get("src", "Türkçe")).code || "tr-TR";
     mic.hidden = false;
-    let spoken = "", turnTimer;
-    const flushTurn = () => { clearTimeout(turnTimer); const t = spoken; spoken = ""; text.value = ""; autoGrow(); translate(t, true); };
-    rec.onstart = () => { recRunning = true; heard = false; };
+    // Android Chrome re-sends the whole utterance so far as each new result ("onu", "onu hemen", "onu hemen ara"),
+    // while other browsers send separate pieces. merge() handles both: a longer repeat replaces, a new piece appends.
+    const norm = (x) => x.toLowerCase().replace(/\s+/g, " ").trim();
+    function merge(acc, next) {
+      next = next.trim();
+      if (!next) return acc;
+      if (!acc) return next;
+      if (norm(next).startsWith(norm(acc))) return next;
+      if (norm(acc).endsWith(norm(next)) || norm(acc).startsWith(norm(next))) return acc;
+      return acc + " " + next;
+    }
+    let committed = "", sessionText = "", consumed = "", turnTimer;
+    const current = () => {
+      let t = sessionText;
+      if (consumed && norm(t).startsWith(norm(consumed))) t = t.slice(consumed.length).trim();
+      else if (consumed && norm(consumed).startsWith(norm(t))) t = "";
+      return merge(committed, t);
+    };
+    const flushTurn = () => {
+      clearTimeout(turnTimer);
+      const t = current();
+      committed = ""; consumed = sessionText;
+      text.value = ""; autoGrow();
+      translate(t, true);
+    };
+    rec.onstart = () => { recRunning = true; heard = false; committed = current(); sessionText = ""; consumed = ""; };
     rec.onresult = (e) => {
       heard = true;
-      let interim = "";
-      for (let i = e.resultIndex; i < e.results.length; i++) {
-        const r = e.results[i];
-        if (r.isFinal) spoken += (spoken ? " " : "") + r[0].transcript.trim(); else interim += r[0].transcript;
+      let finals = "", interim = "";
+      for (let i = 0; i < e.results.length; i++) {
+        const r = e.results[i], t = r[0].transcript;
+        if (r.isFinal) finals = merge(finals, t); else interim = merge(interim, t);
       }
-      text.value = (spoken + " " + interim).trim();
+      sessionText = finals;
+      const now = current();
+      let tail = interim;
+      if (tail && norm(tail).startsWith(norm(finals))) tail = tail.trim().slice(finals.length).trim();
+      text.value = (now + " " + tail).trim();
       autoGrow();
       clearTimeout(turnTimer);
-      if (spoken && !interim) turnTimer = setTimeout(flushTurn, 1200);
+      if (now && !tail) turnTimer = setTimeout(flushTurn, 1200);
     };
     rec.onerror = (e) => {
       if (e.error === "not-allowed" || e.error === "service-not-allowed" || e.error === "audio-capture") {
