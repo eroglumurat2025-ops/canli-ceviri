@@ -178,7 +178,6 @@ dialog .btns { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wr
       <label><input type="checkbox" id="autoTurn" checked> Karşılıklı konuşmada dili kendiliğinden değiştir</label>
       <label><input type="checkbox" id="quietMode" checked> Bip sesini azalt (sessizlikte mikrofon bekler)</label>
       <label><input type="checkbox" id="liveStt" checked> Anlık ses tanıma (daha hızlı, ses tanıma saatte yaklaşık 1 $)</label>
-      <label><input type="checkbox" id="sttAccurate"> Daha doğru ses tanıma (daha yavaş, sesi yazıya çevirmek yaklaşık 2 sn)</label>
       <label><input type="checkbox" id="ecoMode"> Ekonomik çeviri (yaklaşık 20 kat ucuz ama zor cümlelerde hata yapabilir)</label>
     </div>
     <div class="btns setgroup">
@@ -324,8 +323,6 @@ dialog .btns { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wr
   $("ecoMode").onchange = () => store.set("quality", $("ecoMode").checked ? "eco" : "high");
   $("liveStt").checked = store.get("liveStt", true);
   $("liveStt").onchange = () => store.set("liveStt", $("liveStt").checked);
-  $("sttAccurate").checked = store.get("sttAccurate", false);
-  $("sttAccurate").onchange = () => store.set("sttAccurate", $("sttAccurate").checked);
   for (const id of ["autoSpeak", "autoSend", "autoTurn", "quietMode"]) { $(id).checked = store.get(id, true); $(id).onchange = () => store.set(id, $(id).checked); }
 
   // ---------- translation (Claude, on the viewer's own Claude account) ----------
@@ -354,7 +351,7 @@ dialog .btns { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wr
   function renderCosts() {
     const usd = (x) => "$" + (x || 0).toFixed(x >= 1 ? 2 : 3);
     const bar = document.getElementById("costBar");
-    if (bar) { const m = store.get("meetCosts", null) || { claude: 0, openai: 0 }; bar.textContent = `💲 Bu toplantı ${usd(m.claude + m.openai)}  (Claude ${usd(m.claude)} · OpenAI ${usd(m.openai)})`; }
+    if (bar) { const m = store.get("meetCosts", null) || { claude: 0, openai: 0 }; bar.textContent = (store.get("multi", false) ? "🌐 Çok dilli toplantı AÇIK · " : "") + `💲 Bu toplantı ${usd(m.claude + m.openai)}  (Claude ${usd(m.claude)} · OpenAI ${usd(m.openai)})`; }
     const box = document.getElementById("costBox"); if (!box) return;
     const line = (c) => `Claude ${usd(c.claude)} · OpenAI ${usd(c.openai)} · Toplam ${usd(c.claude + c.openai)}`;
     const all = store.get("costs", null) || { claude: 0, openai: 0, since: "" }, meet = store.get("meetCosts", null) || { claude: 0, openai: 0 };
@@ -545,7 +542,7 @@ ${t}`;
   }
   $("multi").checked = multi();
   $("multi").onchange = () => {
-    store.set("multi", $("multi").checked); renderMeetLangs();
+    store.set("multi", $("multi").checked); renderMeetLangs(); renderCosts();
     if (multi() && srcSel.value !== "Türkçe") { if (tgtSel.value === "Türkçe") tgtSel.value = srcSel.value; srcSel.value = "Türkçe"; saveLangs(); }
     if (cloudOn) { stopCloud(true); startCloud(); } // reconnect so speech recognition stops expecting only two languages
   };
@@ -575,6 +572,7 @@ ${t}`;
     for (let i = 0; i < 30 && sttPending > 0; i++) await new Promise((r) => setTimeout(r, 200));
     await new Promise((r) => setTimeout(r, 1500));
     btn.textContent = "Toplantı bitti ✓";
+    if (multi()) { store.set("multi", false); $("multi").checked = false; renderMeetLangs(); renderCosts(); }
     setTimeout(() => { btn.disabled = false; btn.textContent = "⏹ Toplantıyı bitir"; }, 5000);
     await $("sumBtn").onclick();
   };
@@ -648,7 +646,9 @@ ${t}`, (p) => { out.textContent = p; });
   // and send that piece to OpenAI, which also tells which language was spoken.
   const canRecord = !!(navigator.mediaDevices?.getUserMedia);
   // Fast mode uses the lighter transcription model; "accurate" uses OpenAI's newest one, which took ~2 s per sentence in testing.
-  const sttModel = () => store.get("sttAccurate", false) ? "gpt-transcribe" : "gpt-4o-mini-transcribe";
+  // The light model cannot be told which languages to expect and then guesses (English heard as French or Thai),
+  // so file transcription always uses the model that accepts language hints.
+  const sttModel = () => "gpt-transcribe";
   const HALLUCINATIONS = /altyaz|abone ol|thank(s)? for watching|sous-titr|subt[ií]tulos|untertitel|字幕|konuşma .* dilinde|speech in \w+ or \w+/i;
   let cloudOn = false, cloud = null, sttQueue = Promise.resolve(), sttPending = 0;
 
@@ -711,7 +711,8 @@ ${t}`, (p) => { out.textContent = p; });
   function showCloudHint() {
     if (!cloudOn || hint.className.includes("warn")) return;
     hint.className = "hint listening";
-    hint.textContent = cloud?.speaking ? "🔴 Konuşma kaydediliyor…" : sttPending ? "⏳ Ses yazıya çevriliyor…" : "🎤 Dinliyorum (bipsiz). Konuşun, susunca çevrilir.";
+    hint.textContent = cloud?.speaking ? "🔴 Konuşma kaydediliyor…" : sttPending ? "⏳ Ses yazıya çevriliyor…" : "🎤 Dinliyorum" + (cloud?.ws && cloud.wsReady ? " ⚡ anlık" : "") + ". Konuşun, susunca çevrilir.";
+    if (!cloud?.speaking && !sttPending) hint.textContent += " Dinlenen diller: " + sttLangs().join(", ").toUpperCase();
   }
 
   // Live transcription: audio is streamed to OpenAI while you speak, so the text is ready almost as soon as you stop.
@@ -746,7 +747,7 @@ ${t}`, (p) => { out.textContent = p; });
     c.ws = ws; c.wsReady = false; c.pending = []; c.partial = {};
     ws.onopen = () => {
       liveSession(c);
-      c.wsReady = true;
+      c.wsReady = true; showCloudHint();
     };
     ws.onmessage = (m) => {
       let ev; try { ev = JSON.parse(m.data); } catch { return; }
@@ -761,7 +762,7 @@ ${t}`, (p) => { out.textContent = p; });
         if (t && !HALLUCINATIONS.test(t) && /[\p{L}\p{N}]/u.test(t)) translate(t, true, job.tCut, Date.now() - job.tCommit);
       } else if (ev.type === "error") {
         if (/empty|too small|buffer/i.test(ev.error?.code || ev.error?.message || "")) { if (c.pending.length) { c.pending.shift(); sttPending = Math.max(0, sttPending - 1); showCloudHint(); } return; }
-        if (/auth|key|quota|billing|permission/i.test((ev.error?.code || "") + " " + (ev.error?.message || ""))) liveFailed(c, ev.error?.message);
+        liveFailed(c, ev.error?.message || ev.error?.code);
       }
     };
     ws.onerror = () => liveFailed(c);
