@@ -169,6 +169,7 @@ dialog .btns { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wr
       <label><input type="checkbox" id="autoSpeak" checked> Çeviriyi sesli oku</label>
       <label><input type="checkbox" id="autoSend" checked> Konuşma bitince otomatik çevir</label>
       <label><input type="checkbox" id="autoTurn" checked> Karşılıklı konuşmada dili kendiliğinden değiştir</label>
+      <label><input type="checkbox" id="quietMode" checked> Bip sesini azalt (sessizlikte mikrofon bekler)</label>
     </div>
     <div class="btns setgroup">
       <button type="button" class="icon-btn" id="langBtn">Dil ekle / sil</button>
@@ -215,7 +216,7 @@ dialog .btns { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wr
     srcSel.value = langs().some((l) => l.name === s) ? s : "Türkçe";
     tgtSel.value = langs().some((l) => l.name === t) ? t : "İngilizce";
   }
-  function saveLangs() { store.set("src", srcSel.value); store.set("tgt", tgtSel.value); if (rec) { rec.lang = byName(srcSel.value).code || "tr-TR"; if (listening) { showListening(); if (!ttsActive) rec.stop(); } } }
+  function saveLangs() { store.set("src", srcSel.value); store.set("tgt", tgtSel.value); if (rec) { rec.lang = byName(srcSel.value).code || "tr-TR"; if (listening) { showListening(); if (!ttsActive && recRunning) rec.stop(); } } }
   srcSel.onchange = tgtSel.onchange = saveLangs;
   function swapLangs() { const a = srcSel.value; srcSel.value = tgtSel.value; tgtSel.value = a; saveLangs(); }
   $("swap").onclick = swapLangs;
@@ -286,7 +287,7 @@ dialog .btns { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wr
     feed.scrollTop = feed.scrollHeight;
   }
   $("clearBtn").onclick = () => { history = []; store.set("history", history); renderFeed(); $("setDlg").close(); };
-  for (const id of ["autoSpeak", "autoSend", "autoTurn"]) { $(id).checked = store.get(id, true); $(id).onchange = () => store.set(id, $(id).checked); }
+  for (const id of ["autoSpeak", "autoSend", "autoTurn", "quietMode"]) { $(id).checked = store.get(id, true); $(id).onchange = () => store.set(id, $(id).checked); }
 
   // ---------- translation (Claude, on the viewer's own Claude account) ----------
   // Translation engine: the user's own Claude API key if set; inside claude.ai, the viewer's Claude account.
@@ -371,9 +372,10 @@ ${t}`;
         item.side = res.from.name === "Türkçe" || (res.to.name !== "Türkçe" && res.from === srcL) ? "me" : "them";
         el.replaceWith(bubble(item));
         store.set("history", history);
+        // Speak first, then swap: the recognizer is paused while speaking, so the swap needs no extra restart (each restart beeps on Android).
+        if ($("autoSpeak").checked) speak(item.tr, res.to.name);
         // Turn-taking: after one side speaks, listen for the other side's language next.
         if (fromSpeech && $("autoTurn").checked && srcSel.value === res.from.name) swapLangs();
-        if ($("autoSpeak").checked) speak(item.tr, res.to.name);
       } catch (e) {
         item.error = ERRORS[e?.code] || (e instanceof TypeError ? "İnternet bağlantısı yok ya da Claude'a ulaşılamadı." : "Çeviri yapılamadı: " + (e?.message || "bilinmeyen hata"));
         el._update();
@@ -409,15 +411,44 @@ ${t}`;
       const code = byName(langName).code; if (code) u.lang = code;
       const v = speechSynthesis.getVoices().find((v) => code && v.lang.replace("_", "-").toLowerCase().startsWith(code.slice(0, 2).toLowerCase()));
       if (v) u.voice = v;
-      if (listening) { ttsActive = true; try { rec.abort(); } catch {} }
-      u.onend = u.onerror = () => { ttsActive = false; if (listening) { try { rec.start(); } catch {} } };
+      if (listening) { ttsActive = true; if (recRunning) { try { rec.abort(); } catch {} } }
+      u.onend = u.onerror = () => { ttsActive = false; if (listening) startRec(); };
       speechSynthesis.speak(u);
     } catch {}
   }
 
   // ---------- speech in (browser speech recognition, where the page is allowed the mic) ----------
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  let rec = null, listening = false, ttsActive = false, wakeLock = null;
+  let rec = null, listening = false, ttsActive = false, wakeLock = null, recRunning = false, heard = false, audioCtx = null;
+  function startRec() { if (rec && listening && !recRunning && !ttsActive) { try { rec.start(); } catch {} } }
+
+  // Quiet mode: Android beeps every time recognition (re)starts, and it stops by itself after a few seconds of silence.
+  // Instead of restarting straight away, wait silently on the microphone until someone speaks, then restart once.
+  function waitForVoice() {
+    return new Promise(async (resolve) => {
+      let stream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+        if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        await audioCtx.resume();
+      } catch { stream?.getTracks().forEach((t) => t.stop()); resolve(); return; }
+      const src = audioCtx.createMediaStreamSource(stream), an = audioCtx.createAnalyser();
+      an.fftSize = 1024; src.connect(an);
+      const buf = new Float32Array(an.fftSize);
+      let ticks = 0, floor = 0, loud = 0;
+      const done = () => { clearInterval(iv); src.disconnect(); stream.getTracks().forEach((t) => t.stop()); resolve(); };
+      const iv = setInterval(() => {
+        if (!listening || ttsActive) return done();
+        an.getFloatTimeDomainData(buf);
+        let sum = 0; for (const x of buf) sum += x * x;
+        const rms = Math.sqrt(sum / buf.length);
+        ticks++;
+        if (ticks <= 8) { floor = Math.max(floor, rms); return; }
+        loud = rms > Math.max(0.02, floor * 2.5) ? loud + 1 : 0;
+        if (loud >= 2) done();
+      }, 50);
+    });
+  }
   async function keepAwake(on) {
     try {
       if (on && "wakeLock" in navigator) wakeLock = await navigator.wakeLock.request("screen");
@@ -431,7 +462,9 @@ ${t}`;
     mic.hidden = false;
     let spoken = "", turnTimer;
     const flushTurn = () => { clearTimeout(turnTimer); const t = spoken; spoken = ""; text.value = ""; autoGrow(); translate(t, true); };
+    rec.onstart = () => { recRunning = true; heard = false; };
     rec.onresult = (e) => {
+      heard = true;
       let interim = "";
       for (let i = e.resultIndex; i < e.results.length; i++) {
         const r = e.results[i];
@@ -448,11 +481,18 @@ ${t}`;
         hint.className = "hint warn"; hint.textContent = "Bu ekranda mikrofon açılamadı. " + DICTATION_HINT;
       }
     };
-    rec.onend = () => { if (listening && !ttsActive) { setTimeout(() => { if (listening && !ttsActive) { try { rec.start(); } catch {} } }, 150); } else if (!listening) mic.classList.remove("on"); };
+    rec.onend = () => {
+      recRunning = false;
+      if (!listening) { mic.classList.remove("on"); return; }
+      if (ttsActive) return; // restarted when speaking ends
+      if (heard || !$("quietMode").checked) setTimeout(startRec, 150);
+      else waitForVoice().then(startRec);
+    };
     mic.onclick = () => {
       if (listening) { listening = false; rec.stop(); keepAwake(false); mic.classList.remove("on"); hint.className = "hint"; hint.textContent = ""; return; }
       listening = true; mic.classList.add("on"); keepAwake(true);
-      try { rec.start(); showListening(); } catch {}
+      try { if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)(); audioCtx.resume(); } catch {}
+      startRec(); showListening();
     };
   }
   function showListening() {
