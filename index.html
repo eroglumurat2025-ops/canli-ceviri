@@ -323,7 +323,7 @@ input[type=checkbox] { width: 1.3em; height: 1.3em; accent-color: var(--me); fle
     } else history.forEach((h) => feed.append(bubble(h)));
     feed.scrollTop = feed.scrollHeight;
   }
-  $("clearBtn").onclick = () => { store.set("used", true); history = []; store.set("history", history); renderFeed(); $("setDlg").close(); };
+  $("clearBtn").onclick = () => { store.set("used", true); history = []; store.set("history", history); renderFeed(); store.set("meetActive", false); $("setDlg").close(); };
   $("ecoMode").checked = store.get("quality", "high") === "eco";
   $("ecoMode").onchange = () => store.set("quality", $("ecoMode").checked ? "eco" : "high");
   $("liveStt").checked = store.get("liveStt", true);
@@ -490,6 +490,7 @@ ${t}`;
     const srcL = byName(srcSel.value), tgtL = byName(tgtSel.value);
     const item = { side: srcSel.value === "Türkçe" || tgtSel.value !== "Türkçe" ? "me" : "them", src: srcL.name, tgt: tgtL.name, orig, tr: "" };
     history.push(item); if (history.length > 200) history.shift();
+    if (!store.get("meetActive", false)) store.set("meetActive", true);
     store.set("used", true);
     const el = bubble(item); feed.append(el); feed.scrollTop = feed.scrollHeight;
     queue = queue.then(async () => {
@@ -524,7 +525,7 @@ ${t}`;
   }
 
   // ---------- meeting ----------
-  $("meetBtn").onclick = () => { renderCosts(); renderMeetLangs(); $("meetInfo").value = store.get("meetInfo", ""); $("formal").checked = store.get("formal", false); $("meetDlg").showModal(); };
+  $("meetBtn").onclick = () => { renderCosts(); renderMeetLangs(); renderEndBtn(); $("meetInfo").value = store.get("meetInfo", ""); $("formal").checked = store.get("formal", false); $("meetDlg").showModal(); };
   $("costBar").onclick = () => $("meetBtn").click(); renderCosts();
   $("meetInfo").oninput = () => store.set("meetInfo", $("meetInfo").value);
   $("formal").onchange = () => store.set("formal", $("formal").checked);
@@ -566,21 +567,28 @@ ${t}`;
     const btn = $("newMeet");
     if (!btn.dataset.armed) { btn.dataset.armed = "1"; btn.textContent = "Konuşma silinecek. Emin misiniz? Tekrar basın"; setTimeout(() => { delete btn.dataset.armed; btn.textContent = "Yeni toplantı başlat"; }, 4000); return; }
     delete btn.dataset.armed; btn.textContent = "Yeni toplantı başlat";
-    store.set("used", true); history = []; store.set("history", history); renderFeed();
+    store.set("used", true); history = []; store.set("history", history); renderFeed(); setMeetActive(false);
     store.set("meetCosts", { claude: 0, openai: 0 }); renderCosts();
     $("meetInfo").value = ""; store.set("meetInfo", ""); $("sumOut").hidden = true;
   };
   // End meeting: stop listening and speaking, let the last sentence finish translating, then write the summary.
+  // A meeting is "on" from the first translation (or 🎤) until it is ended; the end button only works while one is on.
+  const meetActive = () => store.get("meetActive", history.length > 0);
+  function setMeetActive(on) { store.set("meetActive", on); renderEndBtn(); }
+  function renderEndBtn() {
+    const btn = $("endMeet"), on = meetActive();
+    btn.disabled = !on; btn.style.opacity = on ? "" : "0.55";
+    btn.textContent = on ? "Toplantıyı bitir" : history.length ? "Toplantı bitti ✓" : "Devam eden toplantı yok";
+  }
   $("endMeet").onclick = async () => {
-    const btn = $("endMeet");
+    const btn = $("endMeet"); if (!meetActive()) return;
     if (cloudOn) stopCloud(); else if (listening) browserMicClick();
     try { speechSynthesis.cancel(); } catch {}
     btn.disabled = true; btn.textContent = "Son cümle bekleniyor…";
     for (let i = 0; i < 30 && sttPending > 0; i++) await new Promise((r) => setTimeout(r, 200));
     await new Promise((r) => setTimeout(r, 1500));
-    btn.textContent = "Toplantı bitti ✓";
+    setMeetActive(false);
     if (multi()) { store.set("multi", false); $("multi").checked = false; renderMeetLangs(); renderCosts(); }
-    setTimeout(() => { btn.disabled = false; btn.textContent = "Toplantıyı bitir"; }, 5000);
     $("sumOut").hidden = false; $("sumOut").scrollIntoView({ behavior: "smooth", block: "start" });
     await $("sumBtn").onclick();
   };
