@@ -159,9 +159,10 @@ dialog .btns { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wr
   <h2>Ayarlar</h2>
   <form id="setForm" method="dialog">
     <div class="row"><label for="apiKey">Claude API anahtarı (sk-ant-… ile başlar)</label><input id="apiKey" type="password" autocomplete="off" spellcheck="false" placeholder="sk-ant-..."></div>
+    <div class="row"><label for="oaKey">OpenAI API anahtarı, bipsiz dinleme için (sk-… ile başlar, isteğe bağlı)</label><input id="oaKey" type="password" autocomplete="off" spellcheck="false" placeholder="sk-..."></div>
     <p class="hint">Anahtar sadece bu telefonda saklanır, başka hiçbir yere gönderilmez; yalnızca çeviri için doğrudan Claude'a gider.</p>
     <div class="btns">
-      <button type="button" class="icon-btn" id="delKey">Anahtarı sil</button>
+      <button type="button" class="icon-btn" id="delKey">Anahtarları sil</button>
       <button type="submit" class="primary">Kaydet</button>
     </div>
   </form>
@@ -295,6 +296,7 @@ dialog .btns { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wr
   let samplePromise = window.claude?.use ? window.claude.use("sample") : Promise.resolve(null);
   let queue = Promise.resolve();
   const apiKey = () => (store.get("apiKey", "") || "").trim();
+  const oaKey = () => (store.get("oaKey", "") || "").trim();
 
   async function askClaude(p, onText) {
     const key = apiKey();
@@ -375,7 +377,7 @@ ${t}`;
         // Speak first, then swap: the recognizer is paused while speaking, so the swap needs no extra restart (each restart beeps on Android).
         if ($("autoSpeak").checked) speak(item.tr, res.to.name);
         // Turn-taking: after one side speaks, listen for the other side's language next.
-        if (fromSpeech && $("autoTurn").checked && srcSel.value === res.from.name) swapLangs();
+        if (fromSpeech && !cloudOn && $("autoTurn").checked && srcSel.value === res.from.name) swapLangs();
       } catch (e) {
         item.error = ERRORS[e?.code] || (e instanceof TypeError ? "İnternet bağlantısı yok ya da Claude'a ulaşılamadı." : "Çeviri yapılamadı: " + (e?.message || "bilinmeyen hata"));
         el._update();
@@ -384,10 +386,14 @@ ${t}`;
   }
 
   // ---------- settings ----------
-  $("setBtn").onclick = () => { $("apiKey").value = apiKey(); $("setDlg").showModal(); };
-  $("setForm").onsubmit = (e) => { e.preventDefault(); store.set("apiKey", $("apiKey").value.trim()); $("setDlg").close(); updateKeyHint(); };
+  $("setBtn").onclick = () => { $("apiKey").value = apiKey(); $("oaKey").value = oaKey(); $("setDlg").showModal(); };
+  $("setForm").onsubmit = (e) => {
+    e.preventDefault();
+    store.set("apiKey", $("apiKey").value.trim()); store.set("oaKey", $("oaKey").value.trim());
+    $("setDlg").close(); updateKeyHint(); idleHint();
+  };
   $("closeSet").onclick = () => $("setDlg").close();
-  $("delKey").onclick = () => { store.set("apiKey", ""); $("apiKey").value = ""; updateKeyHint(); };
+  $("delKey").onclick = () => { store.set("apiKey", ""); store.set("oaKey", ""); $("apiKey").value = ""; $("oaKey").value = ""; updateKeyHint(); idleHint(); };
   function updateKeyHint() { $("setBtn").textContent = apiKey() ? "Ayarlar" : "Ayarlar ⚠"; }
 
   $("form").onsubmit = (e) => { e.preventDefault(); clearTimeout(autoTimer); const t = text.value; text.value = ""; store.set("draft", ""); autoGrow(); translate(t); };
@@ -411,8 +417,8 @@ ${t}`;
       const code = byName(langName).code; if (code) u.lang = code;
       const v = speechSynthesis.getVoices().find((v) => code && v.lang.replace("_", "-").toLowerCase().startsWith(code.slice(0, 2).toLowerCase()));
       if (v) u.voice = v;
-      if (listening) { ttsActive = true; if (recRunning) { try { rec.abort(); } catch {} } }
-      u.onend = u.onerror = () => { ttsActive = false; if (listening) startRec(); };
+      if (listening || cloudOn) { ttsActive = true; if (recRunning) { try { rec.abort(); } catch {} } }
+      u.onend = u.onerror = () => { ttsActive = false; ttsEndedAt = Date.now(); if (listening) startRec(); };
       speechSynthesis.speak(u);
     } catch {}
   }
@@ -420,6 +426,125 @@ ${t}`;
   // ---------- speech in (browser speech recognition, where the page is allowed the mic) ----------
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   let rec = null, listening = false, ttsActive = false, wakeLock = null, recRunning = false, heard = false, audioCtx = null;
+  let browserMicClick = null, ttsEndedAt = 0;
+
+  // ---------- bipsiz dinleme: own microphone capture + OpenAI transcription ----------
+  // The phone's speech service is not used at all (no beeps). We listen on the microphone, cut the audio at each pause,
+  // and send that piece to OpenAI, which also tells which language was spoken.
+  const canRecord = !!(navigator.mediaDevices?.getUserMedia);
+  const TRANSCRIBE_MODEL = "gpt-transcribe";
+  const HALLUCINATIONS = /altyaz|abone ol|thank(s)? for watching|sous-titr|subt[ií]tulos|untertitel|字幕/i;
+  let cloudOn = false, cloud = null, sttQueue = Promise.resolve(), sttPending = 0;
+
+  function encodeWav(chunks, rate) {
+    const len = chunks.reduce((n, c) => n + c.length, 0), buf = new ArrayBuffer(44 + len * 2), v = new DataView(buf);
+    const w = (o, str) => { for (let i = 0; i < str.length; i++) v.setUint8(o + i, str.charCodeAt(i)); };
+    w(0, "RIFF"); v.setUint32(4, 36 + len * 2, true); w(8, "WAVE"); w(12, "fmt "); v.setUint32(16, 16, true);
+    v.setUint16(20, 1, true); v.setUint16(22, 1, true); v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true);
+    v.setUint16(32, 2, true); v.setUint16(34, 16, true); w(36, "data"); v.setUint32(40, len * 2, true);
+    let o = 44;
+    for (const c of chunks) for (let i = 0; i < c.length; i++, o += 2) { const x = Math.max(-1, Math.min(1, c[i])); v.setInt16(o, x < 0 ? x * 0x8000 : x * 0x7fff, true); }
+    return new Blob([buf], { type: "audio/wav" });
+  }
+  function downsample(input, from, to) {
+    if (from === to) return new Float32Array(input);
+    const ratio = from / to, out = new Float32Array(Math.floor(input.length / ratio));
+    for (let i = 0; i < out.length; i++) {
+      const a = Math.floor(i * ratio), b = Math.min(input.length, Math.floor((i + 1) * ratio));
+      let sum = 0; for (let j = a; j < b; j++) sum += input[j];
+      out[i] = sum / Math.max(1, b - a);
+    }
+    return out;
+  }
+
+  async function transcribe(blob) {
+    const fd = new FormData();
+    fd.append("file", blob, "speech.wav");
+    fd.append("model", TRANSCRIBE_MODEL);
+    for (const n of [srcSel.value, tgtSel.value]) { const c = byName(n).code; if (c) fd.append("languages[]", c.slice(0, 2).toLowerCase()); }
+    const r = await fetch("https://api.openai.com/v1/audio/transcriptions", { method: "POST", headers: { Authorization: "Bearer " + oaKey() }, body: fd });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      const m = data?.error?.message || ("HTTP " + r.status);
+      throw { code: r.status === 401 ? "oa_bad_key" : /quota|billing|credit/i.test(m) ? "oa_no_credit" : r.status === 429 ? "rate_limited" : "oa", message: m };
+    }
+    return (data.text || "").trim();
+  }
+
+  function sendSegment(chunks, rate) {
+    const blob = encodeWav(chunks, rate);
+    sttPending++; showCloudHint();
+    sttQueue = sttQueue.then(async () => {
+      try {
+        const t = await transcribe(blob);
+        if (t && !HALLUCINATIONS.test(t) && /[\p{L}\p{N}]/u.test(t)) translate(t, true);
+      } catch (e) {
+        const msg = { oa_bad_key: "OpenAI anahtarı geçersiz. Ayarlar'dan kontrol edin.", oa_no_credit: "OpenAI hesabında bakiye yok. platform.openai.com > Billing bölümünden yükleyin.", rate_limited: "Çok hızlı istek gönderildi, biraz bekleyin." }[e?.code]
+          || (e instanceof TypeError ? "İnternet bağlantısı yok ya da OpenAI'ye ulaşılamadı." : "Ses yazıya çevrilemedi: " + (e?.message || "bilinmeyen hata"));
+        hint.className = "hint warn"; hint.textContent = msg;
+        if (e?.code === "oa_bad_key" || e?.code === "oa_no_credit") stopCloud(true);
+      } finally { sttPending--; showCloudHint(); }
+    });
+  }
+
+  function showCloudHint() {
+    if (!cloudOn || hint.className.includes("warn")) return;
+    hint.className = "hint listening";
+    hint.textContent = cloud?.speaking ? "🔴 Konuşma kaydediliyor…" : sttPending ? "⏳ Ses yazıya çevriliyor…" : "🎤 Dinliyorum (bipsiz). Konuşun, susunca çevrilir.";
+  }
+
+  async function startCloud() {
+    let stream;
+    try {
+      if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      await audioCtx.resume();
+      stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+    } catch {
+      hint.className = "hint warn"; hint.textContent = "Mikrofon açılamadı. Telefon ayarlarından bu uygulamaya mikrofon izni verin.";
+      return;
+    }
+    cloudOn = true; mic.classList.add("on"); keepAwake(true);
+    const rate = audioCtx.sampleRate, OUT = 16000;
+    const src = audioCtx.createMediaStreamSource(stream);
+    const proc = audioCtx.createScriptProcessor(4096, 1, 1);
+    const mute = audioCtx.createGain(); mute.gain.value = 0;
+    src.connect(proc); proc.connect(mute); mute.connect(audioCtx.destination);
+    const blockMs = 4096 / rate * 1000;
+    cloud = { stream, src, proc, mute, speaking: false, chunks: [], preroll: [], floor: 0, calib: 0, loud: 0, quietMs: 0, speechMs: 0 };
+    proc.onaudioprocess = (ev) => {
+      const c = cloud; if (!c) return;
+      const data = ev.inputBuffer.getChannelData(0);
+      // While the app is reading a translation aloud (and just after), ignore the microphone so it does not hear itself.
+      if (ttsActive || Date.now() - ttsEndedAt < 400) { if (c.speaking) { c.speaking = false; c.chunks = []; } c.preroll = []; return; }
+      let sum = 0; for (let i = 0; i < data.length; i++) sum += data[i] * data[i];
+      const rms = Math.sqrt(sum / data.length);
+      const pcm = downsample(data, rate, OUT);
+      if (c.calib < 5) { c.floor = Math.max(c.floor, rms); c.calib++; return; }
+      const thr = Math.max(0.012, c.floor * 2.5);
+      if (!c.speaking) {
+        c.preroll.push(pcm); if (c.preroll.length > 3) c.preroll.shift();
+        c.loud = rms > thr ? c.loud + 1 : 0;
+        if (rms < thr) c.floor = c.floor * 0.95 + rms * 0.05; // follow slowly changing background noise
+        if (c.loud >= 1) { c.speaking = true; c.chunks = [...c.preroll]; c.preroll = []; c.quietMs = 0; c.speechMs = 0; showCloudHint(); }
+        return;
+      }
+      c.chunks.push(pcm); c.speechMs += blockMs;
+      c.quietMs = rms < thr ? c.quietMs + blockMs : 0;
+      if (c.quietMs >= 800 || c.speechMs >= 25000) {
+        const chunks = c.chunks; c.speaking = false; c.chunks = [];
+        if (c.speechMs - c.quietMs >= 300) sendSegment(chunks, OUT);
+        showCloudHint();
+      }
+    };
+    showCloudHint();
+  }
+
+  function stopCloud(keepHint = false) {
+    const c = cloud; cloud = null; cloudOn = false;
+    if (c) { c.proc.onaudioprocess = null; try { c.src.disconnect(); c.proc.disconnect(); c.mute.disconnect(); } catch {} c.stream.getTracks().forEach((t) => t.stop()); }
+    mic.classList.remove("on"); keepAwake(false);
+    if (!keepHint) idleHint();
+  }
   function startRec() { if (rec && listening && !recRunning && !ttsActive) { try { rec.start(); } catch {} } }
 
   // Quiet mode: Android beeps every time recognition (re)starts, and it stops by itself after a few seconds of silence.
@@ -459,7 +584,6 @@ ${t}`;
   const DICTATION_HINT = "Konuşmak için yazı kutusuna dokunun ve telefon klavyesindeki 🎤 tuşuna basın. Siz durunca çeviri kendiliğinden yapılır.";
   if (SR) {
     rec = new SR(); rec.continuous = true; rec.interimResults = true; rec.lang = byName(store.get("src", "Türkçe")).code || "tr-TR";
-    mic.hidden = false;
     // Android Chrome re-sends the whole utterance so far as each new result ("onu", "onu hemen", "onu hemen ara"),
     // while other browsers send separate pieces. merge() handles both: a longer repeat replaces, a new piece appends.
     const norm = (x) => x.toLowerCase().replace(/\s+/g, " ").trim();
@@ -515,7 +639,7 @@ ${t}`;
       if (heard || !$("quietMode").checked) setTimeout(startRec, 150);
       else waitForVoice().then(startRec);
     };
-    mic.onclick = () => {
+    browserMicClick = () => {
       if (listening) { listening = false; rec.stop(); keepAwake(false); mic.classList.remove("on"); hint.className = "hint"; hint.textContent = ""; return; }
       listening = true; mic.classList.add("on"); keepAwake(true);
       try { if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)(); audioCtx.resume(); } catch {}
@@ -526,8 +650,20 @@ ${t}`;
     hint.className = "hint listening";
     hint.textContent = "🎤 Şimdi dinlenen dil: " + srcSel.value + ". Yanlışsa ⇄ tuşuna basın.";
   }
-  if (!SR) hint.textContent = DICTATION_HINT;
-  else hint.textContent = "Sürekli dinlemek için 🎤 tuşuna basın.";
+  function idleHint() {
+    mic.hidden = !(SR || (oaKey() && canRecord));
+    if (listening || cloudOn) return;
+    hint.className = "hint";
+    hint.textContent = oaKey() && canRecord ? "Bipsiz dinleme hazır. Başlamak için 🎤 tuşuna basın."
+      : SR ? "Sürekli dinlemek için 🎤 tuşuna basın." : DICTATION_HINT;
+  }
+  mic.onclick = () => {
+    if (cloudOn) return stopCloud();
+    if (listening) return browserMicClick();
+    if (oaKey() && canRecord) return startCloud();
+    if (browserMicClick) browserMicClick();
+  };
+  idleHint();
 
   // Text size: A− / A+ in the header, remembered on this phone.
   let scale = store.get("scale", 1);
