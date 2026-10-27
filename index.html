@@ -177,6 +177,21 @@ input[type=checkbox] { width: 1.3em; height: 1.3em; accent-color: var(--me); fle
   </form>
     <div class="toggles setgroup">
       <label><input type="checkbox" id="autoSpeak" checked> Çeviriyi sesli oku</label>
+      <div class="row"><label for="voiceSel">Okuyan ses</label>
+        <select id="voiceSel">
+          <option value="phone">Telefonun kendi sesi (ücretsiz)</option>
+          <option value="female">Kadın sesi (OpenAI, daha doğal)</option>
+          <option value="male">Erkek sesi (OpenAI, daha doğal)</option>
+        </select></div>
+      <div class="row"><label for="toneSel">Ses tonu</label>
+        <select id="toneSel">
+          <option value="natural">Doğal</option>
+          <option value="formal">Resmi, profesyonel</option>
+          <option value="warm">Sıcak, samimi</option>
+          <option value="calm">Sakin ve yavaş</option>
+          <option value="energetic">Enerjik</option>
+        </select></div>
+      <p class="hint" style="margin:0">Kadın ve erkek sesi OpenAI anahtarı ister; dakikası yaklaşık 1,5 sent. Anahtar yoksa telefonun sesi kullanılır.</p>
       <label><input type="checkbox" id="autoSend" checked> Konuşma bitince otomatik çevir</label>
       <label><input type="checkbox" id="autoTurn" checked> Karşılıklı konuşmada dili kendiliğinden değiştir</label>
       <label><input type="checkbox" id="quietMode" checked> Bip sesini azalt (sessizlikte mikrofon bekler)</label>
@@ -329,6 +344,8 @@ input[type=checkbox] { width: 1.3em; height: 1.3em; accent-color: var(--me); fle
   $("liveStt").checked = store.get("liveStt", true);
   $("liveStt").onchange = () => store.set("liveStt", $("liveStt").checked);
   for (const id of ["autoSpeak", "autoSend", "autoTurn", "quietMode"]) { $(id).checked = store.get(id, true); $(id).onchange = () => store.set(id, $(id).checked); }
+  $("voiceSel").value = store.get("voice", "phone"); $("voiceSel").onchange = () => { store.set("voice", $("voiceSel").value); speak("Merhaba, bu sesle okuyacağım.", "Türkçe"); };
+  $("toneSel").value = store.get("tone", "natural"); $("toneSel").onchange = () => { store.set("tone", $("toneSel").value); speak("Merhaba, bu tonla okuyacağım.", "Türkçe"); };
 
   // ---------- translation (Claude, on the viewer's own Claude account) ----------
   // Translation engine: the user's own Claude API key if set; inside claude.ai, the viewer's Claude account.
@@ -583,7 +600,7 @@ ${t}`;
   $("endMeet").onclick = async () => {
     const btn = $("endMeet"); if (!meetActive()) return;
     if (cloudOn) stopCloud(); else if (listening) browserMicClick();
-    try { speechSynthesis.cancel(); } catch {}
+    stopSpeaking();
     btn.disabled = true; btn.textContent = "Son cümle bekleniyor…";
     for (let i = 0; i < 30 && sttPending > 0; i++) await new Promise((r) => setTimeout(r, 200));
     await new Promise((r) => setTimeout(r, 1500));
@@ -638,11 +655,56 @@ ${t}`, (p) => { out.textContent = p; });
   });
 
   // ---------- speech out ----------
+  // Voice choice: the phone's own voice (free), or an OpenAI voice (female/male) with a chosen tone.
+  const TONES = {
+    natural: { say: "Speak naturally and clearly, like a professional interpreter.", rate: 1, pitch: 1 },
+    formal: { say: "Speak in a formal, professional, confident business tone.", rate: 0.95, pitch: 0.95 },
+    warm: { say: "Speak in a warm, friendly and polite tone.", rate: 1, pitch: 1.05 },
+    calm: { say: "Speak calmly and a little slowly, with clear pauses.", rate: 0.85, pitch: 1 },
+    energetic: { say: "Speak in an upbeat, energetic and positive tone.", rate: 1.1, pitch: 1.08 },
+  };
+  const OA_VOICES = { female: "marin", male: "cedar" };
+  let ttsSource = null;
+  function stopSpeaking() {
+    try { speechSynthesis.cancel(); } catch {}
+    if (ttsSource) { try { ttsSource.stop(); } catch {} ttsSource = null; }
+  }
+  function ttsDone() { ttsActive = false; ttsEndedAt = Date.now(); if (listening) startRec(); }
+  function ttsStart() { if (listening || cloudOn) { ttsActive = true; if (recRunning) { try { rec.abort(); } catch {} } } }
+  async function speakOpenAI(t, langName, voice, tone) {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    await audioCtx.resume();
+    const r = await fetch("https://api.openai.com/v1/audio/speech", {
+      method: "POST", headers: { Authorization: "Bearer " + oaKey(), "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "gpt-4o-mini-tts", voice: OA_VOICES[voice], input: t, response_format: "mp3",
+        instructions: TONES[tone].say + " The text is in " + byName(langName).en + "; use a native accent." }),
+    });
+    if (!r.ok) throw new Error("tts " + r.status);
+    const buf = await audioCtx.decodeAudioData(await r.arrayBuffer());
+    addCost("openai", buf.duration * 0.015 / 60);
+    stopSpeaking();
+    const src = audioCtx.createBufferSource(); src.buffer = buf; src.connect(audioCtx.destination);
+    ttsSource = src; ttsStart();
+    src.onended = () => { if (ttsSource === src) ttsSource = null; ttsDone(); };
+    src.start();
+  }
   function speak(t, langName) {
+    if (!t) return;
+    const voice = store.get("voice", "phone"), tone = store.get("tone", "natural");
+    if (voice !== "phone" && oaKey()) {
+      // Mute the mic from the moment we ask, so nothing is recorded while the audio is on its way.
+      ttsStart();
+      speakOpenAI(t, langName, voice, tone).catch(() => { ttsDone(); speakPhone(t, langName, tone); });
+      return;
+    }
+    speakPhone(t, langName, tone);
+  }
+  function speakPhone(t, langName, tone = "natural") {
     if (!("speechSynthesis" in window) || !t) return;
     try {
-      speechSynthesis.cancel();
+      stopSpeaking();
       const u = new SpeechSynthesisUtterance(t);
+      u.rate = TONES[tone]?.rate || 1; u.pitch = TONES[tone]?.pitch || 1;
       const code = byName(langName).code; if (code) u.lang = code;
       const v = speechSynthesis.getVoices().find((v) => code && v.lang.replace("_", "-").toLowerCase().startsWith(code.slice(0, 2).toLowerCase()));
       if (v) u.voice = v;
