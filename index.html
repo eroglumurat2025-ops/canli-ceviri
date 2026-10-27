@@ -175,6 +175,7 @@ dialog .btns { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wr
       <label><input type="checkbox" id="autoSend" checked> Konuşma bitince otomatik çevir</label>
       <label><input type="checkbox" id="autoTurn" checked> Karşılıklı konuşmada dili kendiliğinden değiştir</label>
       <label><input type="checkbox" id="quietMode" checked> Bip sesini azalt (sessizlikte mikrofon bekler)</label>
+      <label><input type="checkbox" id="sttAccurate"> Daha doğru ses tanıma (daha yavaş, sesi yazıya çevirmek yaklaşık 2 sn)</label>
       <label><input type="checkbox" id="ecoMode"> Ekonomik çeviri (yaklaşık 20 kat ucuz ama zor cümlelerde hata yapabilir)</label>
     </div>
     <div class="btns setgroup">
@@ -312,6 +313,8 @@ dialog .btns { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wr
   $("clearBtn").onclick = () => { store.set("used", true); history = []; store.set("history", history); renderFeed(); $("setDlg").close(); };
   $("ecoMode").checked = store.get("quality", "high") === "eco";
   $("ecoMode").onchange = () => store.set("quality", $("ecoMode").checked ? "eco" : "high");
+  $("sttAccurate").checked = store.get("sttAccurate", false);
+  $("sttAccurate").onchange = () => store.set("sttAccurate", $("sttAccurate").checked);
   for (const id of ["autoSpeak", "autoSend", "autoTurn", "quietMode"]) { $(id).checked = store.get(id, true); $(id).onchange = () => store.set(id, $(id).checked); }
 
   // ---------- translation (Claude, on the viewer's own Claude account) ----------
@@ -417,6 +420,7 @@ ${t}`;
     const el = bubble(item); feed.append(el); feed.scrollTop = feed.scrollHeight;
     queue = queue.then(async () => {
       try {
+        const tTr = Date.now();
         const context = history.filter((h) => h !== item && h.tr && !h.error).slice(-8);
         const raw = await askClaude(prompt(srcL, tgtL, orig, context), (partial) => {
           const m = partial.match(/"translation"\s*:\s*"((?:[^"\\]|\\.)*)/);
@@ -426,7 +430,8 @@ ${t}`;
         });
         const res = parseReply(raw, srcL, tgtL);
         item.tr = res.tr; item.src = res.from.name; item.tgt = res.to.name;
-        item.timing = (sttMs ? "ses→yazı " + (sttMs / 1000).toFixed(1) + " sn · " : "") + "toplam " + ((Date.now() - t0) / 1000).toFixed(1) + " sn";
+        const sec = (ms) => (ms / 1000).toFixed(1);
+        item.timing = (sttMs ? "ses→yazı " + sec(sttMs) + " · " : "") + "çeviri " + sec(Date.now() - tTr) + " · toplam " + sec(Date.now() - t0) + " sn";
         item.side = res.from.name === "Türkçe" || (res.to.name !== "Türkçe" && res.from === srcL) ? "me" : "them";
         el.replaceWith(bubble(item));
         store.set("history", history);
@@ -529,7 +534,8 @@ ${t}`, (p) => { out.textContent = p; });
   // The phone's speech service is not used at all (no beeps). We listen on the microphone, cut the audio at each pause,
   // and send that piece to OpenAI, which also tells which language was spoken.
   const canRecord = !!(navigator.mediaDevices?.getUserMedia);
-  const TRANSCRIBE_MODEL = "gpt-transcribe";
+  // Fast mode uses the lighter transcription model; "accurate" uses OpenAI's newest one, which took ~2 s per sentence in testing.
+  const sttModel = () => store.get("sttAccurate", false) ? "gpt-transcribe" : "gpt-4o-mini-transcribe";
   const HALLUCINATIONS = /altyaz|abone ol|thank(s)? for watching|sous-titr|subt[ií]tulos|untertitel|字幕/i;
   let cloudOn = false, cloud = null, sttQueue = Promise.resolve(), sttPending = 0;
 
@@ -557,8 +563,9 @@ ${t}`, (p) => { out.textContent = p; });
   async function transcribe(blob) {
     const fd = new FormData();
     fd.append("file", blob, "speech.wav");
-    fd.append("model", TRANSCRIBE_MODEL);
-    for (const n of [srcSel.value, tgtSel.value]) { const c = byName(n).code; if (c) fd.append("languages[]", c.slice(0, 2).toLowerCase()); }
+    const m = sttModel(); fd.append("model", m);
+    if (m === "gpt-transcribe") { for (const n of [srcSel.value, tgtSel.value]) { const c = byName(n).code; if (c) fd.append("languages[]", c.slice(0, 2).toLowerCase()); } }
+    else fd.append("prompt", `Konuşma ${srcSel.value} veya ${tgtSel.value} dilinde. Speech in ${byName(srcSel.value).en} or ${byName(tgtSel.value).en}.`);
     const r = await fetch("https://api.openai.com/v1/audio/transcriptions", { method: "POST", headers: { Authorization: "Bearer " + oaKey() }, body: fd });
     const data = await r.json().catch(() => ({}));
     if (!r.ok) {
@@ -629,7 +636,7 @@ ${t}`, (p) => { out.textContent = p; });
       }
       c.chunks.push(pcm); c.speechMs += blockMs;
       c.quietMs = rms < thr ? c.quietMs + blockMs : 0;
-      if (c.quietMs >= 600 || c.speechMs >= 25000) {
+      if (c.quietMs >= 500 || c.speechMs >= 25000) {
         const chunks = c.chunks; c.speaking = false; c.chunks = [];
         if (c.speechMs - c.quietMs >= 300) sendSegment(chunks, OUT);
         showCloudHint();
