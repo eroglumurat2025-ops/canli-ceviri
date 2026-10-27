@@ -44,14 +44,14 @@ body { margin: 0; }
   --me: #8ea2ff; --me-soft: #1f2a55; --them: #f0a35e; --them-soft: #3a2a1a; --danger: #ff8a80;
   color-scheme: dark;
 }
-html { font-size: calc(20px * var(--scale, 1)); }
+html { font-size: calc(20px * var(--scale, 1) * var(--fit, 1)); }
 html, body { height: 100%; }
 body {
   background: var(--bg); color: var(--ink);
   font-family: var(--font-body); font-size: 1rem; line-height: 1.45;
   display: flex; flex-direction: column;
 }
-.wrap { width: 100%; max-width: 720px; margin: 0 auto; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); box-sizing: border-box; }
+.wrap { width: 100%; max-width: calc(720px * var(--fit, 1)); margin: 0 auto; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); box-sizing: border-box; }
 header { padding-block: 14px 8px; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; }
 .hbtns { display: flex; flex-wrap: wrap; gap: 6px; }
 h1 { font-family: var(--font-display); font-weight: 800; font-size: 1.5rem; margin: 0; letter-spacing: -0.01em; }
@@ -86,7 +86,7 @@ select { font: inherit; font-size: 1rem; padding: 8px; border-radius: 10px; bord
 #swap { font-size: 1.2rem; padding: 8px 12px; align-self: end; }
 .inputrow { display: flex; gap: 8px; margin-top: 10px; align-items: flex-end; }
 textarea { flex: 1; min-width: 0; font: inherit; font-size: 1.05rem; padding: 10px 12px; border-radius: 14px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); resize: none; min-height: 2.6rem; max-height: 8rem; box-sizing: border-box; }
-.round { width: 3rem; height: 3rem; border-radius: 50%; border: none; cursor: pointer; font-size: 1.4rem; display: grid; place-items: center; flex: none; }
+.round { width: min(3rem, 16vw); height: min(3rem, 16vw); border-radius: 50%; border: none; cursor: pointer; font-size: min(1.4rem, 7.5vw); display: grid; place-items: center; flex: none; }
 #mic { background: var(--them-soft); color: var(--them); }
 #mic.on { background: var(--danger); color: #fff; animation: pulse 1.2s infinite; }
 #send { background: var(--me); color: var(--surface); }
@@ -100,7 +100,7 @@ textarea { flex: 1; min-width: 0; font: inherit; font-size: 1.05rem; padding: 10
 .hint.warn { color: var(--danger); }
 .hint.listening { color: var(--ink); font-weight: 700; font-size: 1.05rem; }
 
-dialog { border: 1px solid var(--line); border-radius: 16px; background: var(--surface); color: var(--ink); padding: 18px; width: min(92vw, 440px); box-sizing: border-box; }
+dialog { border: 1px solid var(--line); border-radius: 16px; background: var(--surface); color: var(--ink); padding: 18px; width: min(92vw, calc(440px * var(--fit, 1))); box-sizing: border-box; }
 dialog::backdrop { background: rgb(0 0 0 / 0.4); }
 dialog h2 { font-family: var(--font-display); font-size: 1.2rem; margin: 0 0 10px; }
 dialog .row { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; font-size: 0.95rem; color: var(--muted); }
@@ -952,7 +952,11 @@ ${t}`, (p) => { out.textContent = p; });
 
   // Text size: A− / A+ in the header, remembered on this phone.
   let scale = store.get("scale", 1);
-  function applyScale() { document.documentElement.style.setProperty("--scale", scale); store.set("scale", scale); autoGrow(); }
+  // Some phones (e.g. a folded Galaxy Fold cover screen in "desktop site" mode) lay the page out ~980 px wide and shrink it,
+  // so everything looks tiny. Detect that and scale up to the real screen width.
+  function fit() { const f = innerWidth / (screen.width || innerWidth); return f > 1.25 ? Math.min(f, 4) : 1; }
+  function applyScale() { document.documentElement.style.setProperty("--scale", scale); document.documentElement.style.setProperty("--fit", fit()); store.set("scale", scale); autoGrow(); }
+  addEventListener("resize", () => applyScale());
   $("bigger").onclick = () => { scale = Math.min(1.8, Math.round((scale + 0.1) * 10) / 10); applyScale(); };
   $("smaller").onclick = () => { scale = Math.max(0.7, Math.round((scale - 0.1) * 10) / 10); applyScale(); };
   applyScale();
