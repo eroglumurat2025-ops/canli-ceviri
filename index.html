@@ -44,7 +44,7 @@ body { margin: 0; }
   --me: #8ea2ff; --me-soft: #1f2a55; --them: #f0a35e; --them-soft: #3a2a1a; --danger: #ff8a80;
   color-scheme: dark;
 }
-html { font-size: calc(20px * var(--scale, 1) * var(--fit, 1)); }
+html { font-size: calc(23px * var(--scale, 1) * var(--fit, 1)); }
 html, body { height: 100%; }
 body {
   background: var(--bg); color: var(--ink);
@@ -599,7 +599,8 @@ ${t}`, (p) => { out.textContent = p; });
   text.addEventListener("input", () => {
     autoGrow(); store.set("draft", text.value);
     clearTimeout(autoTimer);
-    if ($("autoSend").checked && text.value.trim()) autoTimer = setTimeout(() => $("form").requestSubmit(), 1800);
+    // Only when there is no 🎤 button (keyboard dictation is the only way to talk); typed text waits for Enter / ➤.
+    if (mic.hidden && $("autoSend").checked && text.value.trim()) autoTimer = setTimeout(() => $("form").requestSubmit(), 1800);
   });
 
   // ---------- speech out ----------
