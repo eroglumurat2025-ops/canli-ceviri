@@ -301,14 +301,15 @@ dialog .btns { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wr
     feed.textContent = "";
     if (!history.length) {
       const n = document.createElement("p"); n.className = "empty-note";
-      const firstRun = !store.get("used", false);
+      // Examples only before the app is set up; once there is a key or any conversation, never again.
+      const firstRun = !store.get("used", false) && !apiKey() && !oaKey();
       n.textContent = firstRun ? "Konuşmalar burada görünecek. Aşağıda iki örnek var." : "Konuşmalar burada görünecek.";
       feed.append(n);
       if (firstRun) SAMPLES.forEach((s) => feed.append(bubble(s)));
     } else history.forEach((h) => feed.append(bubble(h)));
     feed.scrollTop = feed.scrollHeight;
   }
-  $("clearBtn").onclick = () => { history = []; store.set("history", history); renderFeed(); $("setDlg").close(); };
+  $("clearBtn").onclick = () => { store.set("used", true); history = []; store.set("history", history); renderFeed(); $("setDlg").close(); };
   $("ecoMode").checked = store.get("quality", "high") === "eco";
   $("ecoMode").onchange = () => store.set("quality", $("ecoMode").checked ? "eco" : "high");
   for (const id of ["autoSpeak", "autoSend", "autoTurn", "quietMode"]) { $(id).checked = store.get(id, true); $(id).onchange = () => store.set(id, $(id).checked); }
@@ -457,7 +458,7 @@ ${t}`;
     const btn = $("newMeet");
     if (!btn.dataset.armed) { btn.dataset.armed = "1"; btn.textContent = "Konuşma silinecek. Emin misiniz? Tekrar basın"; setTimeout(() => { delete btn.dataset.armed; btn.textContent = "Yeni toplantı başlat"; }, 4000); return; }
     delete btn.dataset.armed; btn.textContent = "Yeni toplantı başlat";
-    history = []; store.set("history", history); renderFeed();
+    store.set("used", true); history = []; store.set("history", history); renderFeed();
     $("meetInfo").value = ""; store.set("meetInfo", ""); $("sumOut").hidden = true;
   };
   $("sumBtn").onclick = async () => {
