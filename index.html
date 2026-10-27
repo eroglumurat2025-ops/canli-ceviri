@@ -73,6 +73,7 @@ h1 span { color: var(--me); }
 .bubble .tr.err { color: var(--danger); font-size: 0.95rem; font-weight: 400; }
 .bubble .acts { display: flex; gap: 6px; margin-top: 2px; }
 .bubble .acts button { background: var(--surface); border: 1px solid var(--line); color: var(--ink); border-radius: 999px; padding: 4px 10px; font: inherit; font-size: 0.95rem; cursor: pointer; }
+.timing { text-transform: none; letter-spacing: 0; }
 .sample-tag { background: var(--line); color: var(--muted); border-radius: 999px; padding: 1px 8px; font-size: 0.65rem; }
 
 .composer { background: var(--surface); border-top: 1px solid var(--line); padding-block: 10px calc(10px + env(safe-area-inset-bottom, 0px)); }
@@ -260,6 +261,7 @@ dialog .btns { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wr
     const dir = document.createElement("span"); dir.textContent = item.src + " → " + item.tgt;
     meta.append(who, dir);
     if (item.sample) { const t = document.createElement("span"); t.className = "sample-tag"; t.textContent = "örnek"; meta.append(t); }
+    if (item.timing) { const t = document.createElement("span"); t.className = "timing"; t.textContent = "⏱ " + item.timing; meta.append(t); }
     const orig = document.createElement("div"); orig.className = "orig"; orig.textContent = item.orig;
     const tr = document.createElement("div"); tr.className = "tr";
     const acts = document.createElement("div"); acts.className = "acts";
@@ -281,9 +283,10 @@ dialog .btns { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wr
     feed.textContent = "";
     if (!history.length) {
       const n = document.createElement("p"); n.className = "empty-note";
-      n.textContent = "Konuşmalar burada görünecek. Aşağıda iki örnek var.";
+      const firstRun = !store.get("used", false);
+      n.textContent = firstRun ? "Konuşmalar burada görünecek. Aşağıda iki örnek var." : "Konuşmalar burada görünecek.";
       feed.append(n);
-      SAMPLES.forEach((s) => feed.append(bubble(s)));
+      if (firstRun) SAMPLES.forEach((s) => feed.append(bubble(s)));
     } else history.forEach((h) => feed.append(bubble(h)));
     feed.scrollTop = feed.scrollHeight;
   }
@@ -310,18 +313,35 @@ dialog .btns { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wr
           "anthropic-dangerous-direct-browser-access": "true",
         },
         body: JSON.stringify({
-          model: MODEL, max_tokens: 2000,
+          model: MODEL, max_tokens: 2000, stream: true,
           thinking: { type: "disabled" }, output_config: { effort: "low" },
           messages: [{ role: "user", content: p }],
         }),
       });
-      const data = await r.json().catch(() => ({}));
-      if (!r.ok) {
-        const code = r.status === 401 ? "bad_key" : r.status === 429 ? "rate_limited" : r.status === 402 || /credit|billing/i.test(data?.error?.message || "") ? "no_credit" : "api";
-        throw { code, message: data?.error?.message || ("HTTP " + r.status) };
+      const fail = (status, m) => {
+        const code = status === 401 ? "bad_key" : status === 429 ? "rate_limited" : status === 402 || /credit|billing/i.test(m || "") ? "no_credit" : "api";
+        return { code, message: m || ("HTTP " + status) };
+      };
+      if (!r.ok) { const data = await r.json().catch(() => ({})); throw fail(r.status, data?.error?.message); }
+      // Streamed answer: show the translation as it is written instead of waiting for the end.
+      const reader = r.body.getReader(), dec = new TextDecoder();
+      let buf = "", out = "", stop = "";
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        let i;
+        while ((i = buf.indexOf("\n")) >= 0) {
+          const line = buf.slice(0, i).trim(); buf = buf.slice(i + 1);
+          if (!line.startsWith("data:")) continue;
+          let ev; try { ev = JSON.parse(line.slice(5)); } catch { continue; }
+          if (ev.type === "content_block_delta" && ev.delta?.type === "text_delta") { out += ev.delta.text; onText(out); }
+          else if (ev.type === "message_delta" && ev.delta?.stop_reason) stop = ev.delta.stop_reason;
+          else if (ev.type === "error") throw fail(ev.error?.type === "overloaded_error" ? 429 : 500, ev.error?.message);
+        }
       }
-      if (data.stop_reason === "refusal") throw { code: "api", message: "Claude bu metni çevirmeyi reddetti." };
-      return (data.content || []).filter((b) => b.type === "text").map((b) => b.text).join("").trim();
+      if (stop === "refusal") throw { code: "api", message: "Claude bu metni çevirmeyi reddetti." };
+      return out.trim();
     }
     const sample = await samplePromise;
     if (!sample) throw { code: "no_key" };
@@ -359,18 +379,25 @@ ${t}`;
     rate_limited: "Çok hızlı istek gönderildi ya da kullanım sınırına gelindi. Biraz bekleyip tekrar deneyin.",
   };
 
-  function translate(orig, fromSpeech = false) {
+  function translate(orig, fromSpeech = false, t0 = Date.now(), sttMs = 0) {
     orig = orig.trim(); if (!orig) return;
     if (!history.length) feed.textContent = "";
     const srcL = byName(srcSel.value), tgtL = byName(tgtSel.value);
     const item = { side: srcSel.value === "Türkçe" || tgtSel.value !== "Türkçe" ? "me" : "them", src: srcL.name, tgt: tgtL.name, orig, tr: "" };
     history.push(item); if (history.length > 200) history.shift();
+    store.set("used", true);
     const el = bubble(item); feed.append(el); feed.scrollTop = feed.scrollHeight;
     queue = queue.then(async () => {
       try {
-        const raw = await askClaude(prompt(srcL, tgtL, orig), () => {});
+        const raw = await askClaude(prompt(srcL, tgtL, orig), (partial) => {
+          const m = partial.match(/"translation"\s*:\s*"((?:[^"\\]|\\.)*)/);
+          if (!m) return;
+          try { item.tr = JSON.parse('"' + m[1].replace(/\\$/, "") + '"'); } catch { return; }
+          el._update(); feed.scrollTop = feed.scrollHeight;
+        });
         const res = parseReply(raw, srcL, tgtL);
         item.tr = res.tr; item.src = res.from.name; item.tgt = res.to.name;
+        item.timing = (sttMs ? "ses→yazı " + (sttMs / 1000).toFixed(1) + " sn · " : "") + "toplam " + ((Date.now() - t0) / 1000).toFixed(1) + " sn";
         item.side = res.from.name === "Türkçe" || (res.to.name !== "Türkçe" && res.from === srcL) ? "me" : "them";
         el.replaceWith(bubble(item));
         store.set("history", history);
@@ -474,10 +501,12 @@ ${t}`;
   function sendSegment(chunks, rate) {
     const blob = encodeWav(chunks, rate);
     sttPending++; showCloudHint();
+    const tCut = Date.now();
     sttQueue = sttQueue.then(async () => {
       try {
+        const tStart = Date.now();
         const t = await transcribe(blob);
-        if (t && !HALLUCINATIONS.test(t) && /[\p{L}\p{N}]/u.test(t)) translate(t, true);
+        if (t && !HALLUCINATIONS.test(t) && /[\p{L}\p{N}]/u.test(t)) translate(t, true, tCut, Date.now() - tStart);
       } catch (e) {
         const msg = { oa_bad_key: "OpenAI anahtarı geçersiz. Ayarlar'dan kontrol edin.", oa_no_credit: "OpenAI hesabında bakiye yok. platform.openai.com > Billing bölümünden yükleyin.", rate_limited: "Çok hızlı istek gönderildi, biraz bekleyin." }[e?.code]
           || (e instanceof TypeError ? "İnternet bağlantısı yok ya da OpenAI'ye ulaşılamadı." : "Ses yazıya çevrilemedi: " + (e?.message || "bilinmeyen hata"));
@@ -530,7 +559,7 @@ ${t}`;
       }
       c.chunks.push(pcm); c.speechMs += blockMs;
       c.quietMs = rms < thr ? c.quietMs + blockMs : 0;
-      if (c.quietMs >= 800 || c.speechMs >= 25000) {
+      if (c.quietMs >= 600 || c.speechMs >= 25000) {
         const chunks = c.chunks; c.speaking = false; c.chunks = [];
         if (c.speechMs - c.quietMs >= 300) sendSegment(chunks, OUT);
         showCloudHint();
