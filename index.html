@@ -536,7 +536,7 @@ ${t}`, (p) => { out.textContent = p; });
   const canRecord = !!(navigator.mediaDevices?.getUserMedia);
   // Fast mode uses the lighter transcription model; "accurate" uses OpenAI's newest one, which took ~2 s per sentence in testing.
   const sttModel = () => store.get("sttAccurate", false) ? "gpt-transcribe" : "gpt-4o-mini-transcribe";
-  const HALLUCINATIONS = /altyaz|abone ol|thank(s)? for watching|sous-titr|subt[ií]tulos|untertitel|字幕/i;
+  const HALLUCINATIONS = /altyaz|abone ol|thank(s)? for watching|sous-titr|subt[ií]tulos|untertitel|字幕|konuşma .* dilinde|speech in \w+ or \w+/i;
   let cloudOn = false, cloud = null, sttQueue = Promise.resolve(), sttPending = 0;
 
   function encodeWav(chunks, rate) {
@@ -565,7 +565,7 @@ ${t}`, (p) => { out.textContent = p; });
     fd.append("file", blob, "speech.wav");
     const m = sttModel(); fd.append("model", m);
     if (m === "gpt-transcribe") { for (const n of [srcSel.value, tgtSel.value]) { const c = byName(n).code; if (c) fd.append("languages[]", c.slice(0, 2).toLowerCase()); } }
-    else fd.append("prompt", `Konuşma ${srcSel.value} veya ${tgtSel.value} dilinde. Speech in ${byName(srcSel.value).en} or ${byName(tgtSel.value).en}.`);
+    // No prompt hint here: on near-silent audio the light model echoes the hint back as if it were speech.
     const r = await fetch("https://api.openai.com/v1/audio/transcriptions", { method: "POST", headers: { Authorization: "Bearer " + oaKey() }, body: fd });
     const data = await r.json().catch(() => ({}));
     if (!r.ok) {
