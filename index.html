@@ -110,6 +110,7 @@ dialog textarea { width: 100%; max-height: none; }
 .summary { white-space: pre-wrap; margin-top: 14px; padding: 12px; border-radius: 12px; background: var(--bg); border: 1px solid var(--line); overflow-wrap: anywhere; }
 dialog input { font: inherit; font-size: 1rem; padding: 8px 10px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); }
 dialog .btns { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
+input[type=checkbox] { width: 1.3em; height: 1.3em; accent-color: var(--me); flex: none; }
 .primary { background: var(--me); color: var(--surface); border: none; border-radius: 10px; padding: 9px 14px; font: inherit; font-weight: 700; cursor: pointer; }
 #langList { list-style: none; padding: 0; margin: 0 0 12px; display: flex; flex-wrap: wrap; gap: 6px; }
 #langList li { background: var(--bg); border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px; font-size: 0.85rem; display: flex; gap: 6px; align-items: center; }
@@ -198,7 +199,7 @@ dialog .btns { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wr
   <div id="meetLangsBox" class="row" hidden><label>Toplantıda konuşulacak diller (ses tanıma sadece bunları bekler, böylece aksanlı konuşma başka dil sanılmaz):</label>
     <div id="meetLangs" class="toggles"></div></div>
   <div class="btns setgroup">
-    <button type="button" class="primary" id="endMeet" style="background:#b91c1c">⏹ Toplantıyı bitir</button>
+    <button type="button" class="primary" id="endMeet" style="background:#b91c1c;color:#fff">Toplantıyı bitir</button>
     <button type="button" class="primary" id="sumBtn">Toplantı özeti çıkar</button>
     <button type="button" class="icon-btn" id="shareBtn">Konuşmayı paylaş</button>
     <button type="button" class="icon-btn" id="newMeet">Yeni toplantı başlat</button>
@@ -579,7 +580,8 @@ ${t}`;
     await new Promise((r) => setTimeout(r, 1500));
     btn.textContent = "Toplantı bitti ✓";
     if (multi()) { store.set("multi", false); $("multi").checked = false; renderMeetLangs(); renderCosts(); }
-    setTimeout(() => { btn.disabled = false; btn.textContent = "⏹ Toplantıyı bitir"; }, 5000);
+    setTimeout(() => { btn.disabled = false; btn.textContent = "Toplantıyı bitir"; }, 5000);
+    $("sumOut").hidden = false; $("sumOut").scrollIntoView({ behavior: "smooth", block: "start" });
     await $("sumBtn").onclick();
   };
   $("sumBtn").onclick = async () => {
