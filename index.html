@@ -44,59 +44,63 @@ body { margin: 0; }
   --me: #8ea2ff; --me-soft: #1f2a55; --them: #f0a35e; --them-soft: #3a2a1a; --danger: #ff8a80;
   color-scheme: dark;
 }
+html { font-size: calc(20px * var(--scale, 1)); }
 html, body { height: 100%; }
 body {
   background: var(--bg); color: var(--ink);
-  font-family: var(--font-body); font-size: 16px; line-height: 1.45;
+  font-family: var(--font-body); font-size: 1rem; line-height: 1.45;
   display: flex; flex-direction: column;
 }
 .wrap { width: 100%; max-width: 720px; margin: 0 auto; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); box-sizing: border-box; }
-header { padding-block: 14px 8px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+header { padding-block: 14px 8px; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; }
+.hbtns { display: flex; flex-wrap: wrap; gap: 6px; }
 h1 { font-family: var(--font-display); font-weight: 800; font-size: 1.5rem; margin: 0; letter-spacing: -0.01em; }
 h1 span { color: var(--me); }
 .icon-btn { background: none; border: 1px solid var(--line); color: var(--ink); border-radius: 10px; padding: 8px 12px; font: inherit; font-size: 0.9rem; cursor: pointer; }
 .icon-btn:focus-visible, button:focus-visible, select:focus-visible, textarea:focus-visible, input:focus-visible { outline: 3px solid var(--me); outline-offset: 2px; }
 
 #feed { flex: 1; overflow-y: auto; padding-block: 8px 16px; display: flex; flex-direction: column; gap: 12px; }
-.empty-note { color: var(--muted); font-size: 0.9rem; text-align: center; padding: 4px 0; }
+.empty-note { color: var(--muted); font-size: 1rem; text-align: center; padding: 4px 0; }
 .bubble { max-width: 88%; border-radius: 16px; padding: 10px 14px; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .bubble.me { align-self: flex-end; background: var(--me-soft); border-bottom-right-radius: 4px; }
 .bubble.them { align-self: flex-start; background: var(--them-soft); border-bottom-left-radius: 4px; }
-.bubble .meta { font-size: 0.72rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); display: flex; gap: 8px; align-items: center; }
+.bubble .meta { font-size: 0.8rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); display: flex; gap: 8px; align-items: center; }
 .bubble .meta b { color: var(--me); font-weight: 700; }
 .bubble.them .meta b { color: var(--them); }
-.bubble .orig { color: var(--muted); font-size: 0.95rem; overflow-wrap: anywhere; }
-.bubble .tr { font-size: 1.25rem; font-weight: 700; overflow-wrap: anywhere; white-space: pre-wrap; }
+.bubble .orig { color: var(--muted); font-size: 1rem; overflow-wrap: anywhere; }
+.bubble .tr { font-size: 1.4rem; font-weight: 700; overflow-wrap: anywhere; white-space: pre-wrap; }
 .bubble .tr.pending { color: var(--muted); font-weight: 400; font-style: italic; }
 .bubble .tr.err { color: var(--danger); font-size: 0.95rem; font-weight: 400; }
 .bubble .acts { display: flex; gap: 6px; margin-top: 2px; }
-.bubble .acts button { background: var(--surface); border: 1px solid var(--line); color: var(--ink); border-radius: 999px; padding: 4px 10px; font: inherit; font-size: 0.8rem; cursor: pointer; }
+.bubble .acts button { background: var(--surface); border: 1px solid var(--line); color: var(--ink); border-radius: 999px; padding: 4px 10px; font: inherit; font-size: 0.95rem; cursor: pointer; }
 .sample-tag { background: var(--line); color: var(--muted); border-radius: 999px; padding: 1px 8px; font-size: 0.65rem; }
 
 .composer { background: var(--surface); border-top: 1px solid var(--line); padding-block: 10px calc(10px + env(safe-area-inset-bottom, 0px)); }
 .langs { display: grid; grid-template-columns: 1fr auto 1fr; gap: 8px; align-items: center; }
-.langs label { display: flex; flex-direction: column; gap: 2px; font-size: 0.7rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); min-width: 0; }
+.langs label { display: flex; flex-direction: column; gap: 2px; font-size: 0.8rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); min-width: 0; }
 .langs label.me-l { color: var(--me); }
 .langs label.them-l { color: var(--them); }
 select { font: inherit; font-size: 1rem; padding: 8px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); width: 100%; min-width: 0; }
 #swap { font-size: 1.2rem; padding: 8px 12px; align-self: end; }
 .inputrow { display: flex; gap: 8px; margin-top: 10px; align-items: flex-end; }
-textarea { flex: 1; min-width: 0; font: inherit; font-size: 1.05rem; padding: 10px 12px; border-radius: 14px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); resize: none; min-height: 48px; max-height: 140px; box-sizing: border-box; }
-.round { width: 52px; height: 52px; border-radius: 50%; border: none; cursor: pointer; font-size: 1.4rem; display: grid; place-items: center; flex: none; }
+textarea { flex: 1; min-width: 0; font: inherit; font-size: 1.05rem; padding: 10px 12px; border-radius: 14px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); resize: none; min-height: 2.6rem; max-height: 8rem; box-sizing: border-box; }
+.round { width: 3rem; height: 3rem; border-radius: 50%; border: none; cursor: pointer; font-size: 1.4rem; display: grid; place-items: center; flex: none; }
 #mic { background: var(--them-soft); color: var(--them); }
 #mic.on { background: var(--danger); color: #fff; animation: pulse 1.2s infinite; }
 #send { background: var(--me); color: var(--surface); }
 @keyframes pulse { 50% { transform: scale(1.08); } }
 @media (prefers-reduced-motion: reduce) { #mic.on { animation: none; } }
-.toggles { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 8px; font-size: 0.85rem; color: var(--muted); }
+.toggles { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 8px; font-size: 0.95rem; color: var(--muted); }
 .toggles label { display: flex; gap: 6px; align-items: center; cursor: pointer; }
-.hint { font-size: 0.82rem; color: var(--muted); margin-top: 6px; }
+.toggles input { width: 1.2rem; height: 1.2rem; flex: none; }
+.setgroup { margin: 14px 0 0; padding-top: 14px; border-top: 1px solid var(--line); justify-content: flex-start; flex-direction: column; align-items: flex-start; }
+.hint { font-size: 0.95rem; color: var(--muted); margin-top: 6px; }
 .hint.warn { color: var(--danger); }
 
 dialog { border: 1px solid var(--line); border-radius: 16px; background: var(--surface); color: var(--ink); padding: 18px; width: min(92vw, 440px); box-sizing: border-box; }
 dialog::backdrop { background: rgb(0 0 0 / 0.4); }
 dialog h2 { font-family: var(--font-display); font-size: 1.2rem; margin: 0 0 10px; }
-dialog .row { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; font-size: 0.85rem; color: var(--muted); }
+dialog .row { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; font-size: 0.95rem; color: var(--muted); }
 dialog input { font: inherit; font-size: 1rem; padding: 8px 10px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); }
 dialog .btns { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
 .primary { background: var(--me); color: var(--surface); border: none; border-radius: 10px; padding: 9px 14px; font: inherit; font-weight: 700; cursor: pointer; }
@@ -108,9 +112,9 @@ dialog .btns { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wr
 <body>
 <header class="wrap">
   <h1>Canlı <span>Çeviri</span></h1>
-  <div style="display:flex;gap:8px">
-    <button class="icon-btn" id="clearBtn" type="button">Temizle</button>
-    <button class="icon-btn" id="langBtn" type="button">+ Dil</button>
+  <div class="hbtns">
+    <button class="icon-btn" id="smaller" type="button" aria-label="Yazıyı küçült">A−</button>
+    <button class="icon-btn" id="bigger" type="button" aria-label="Yazıyı büyüt"><b>A+</b></button>
     <button class="icon-btn" id="setBtn" type="button">Ayarlar</button>
   </div>
 </header>
@@ -130,13 +134,9 @@ dialog .btns { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wr
     </div>
     <form class="inputrow" id="form">
       <button class="round" id="mic" type="button" aria-label="Mikrofonla dinle" hidden>🎤</button>
-      <textarea id="text" rows="1" placeholder="Yazın ya da klavyedeki mikrofonla konuşun"></textarea>
+      <textarea id="text" rows="1" placeholder="Yazın veya konuşun"></textarea>
       <button class="round" id="send" type="submit" aria-label="Çevir">➤</button>
     </form>
-    <div class="toggles">
-      <label><input type="checkbox" id="autoSpeak" checked> Çeviriyi sesli oku</label>
-      <label><input type="checkbox" id="autoSend" checked> Konuşma bitince otomatik çevir</label>
-    </div>
     <p class="hint" id="hint"></p>
   </div>
 </section>
@@ -164,6 +164,15 @@ dialog .btns { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wr
       <button type="submit" class="primary">Kaydet</button>
     </div>
   </form>
+    <div class="toggles setgroup">
+      <label><input type="checkbox" id="autoSpeak" checked> Çeviriyi sesli oku</label>
+      <label><input type="checkbox" id="autoSend" checked> Konuşma bitince otomatik çevir</label>
+    </div>
+    <div class="btns setgroup">
+      <button type="button" class="icon-btn" id="langBtn">Dil ekle / sil</button>
+      <button type="button" class="icon-btn" id="clearBtn">Konuşmaları temizle</button>
+    </div>
+    <div class="btns" style="margin-top:14px"><button type="button" class="primary" id="closeSet">Kapat</button></div>
 </dialog>
 
 <script>
@@ -273,7 +282,8 @@ dialog .btns { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wr
     } else history.forEach((h) => feed.append(bubble(h)));
     feed.scrollTop = feed.scrollHeight;
   }
-  $("clearBtn").onclick = () => { history = []; store.set("history", history); renderFeed(); };
+  $("clearBtn").onclick = () => { history = []; store.set("history", history); renderFeed(); $("setDlg").close(); };
+  for (const id of ["autoSpeak", "autoSend"]) { $(id).checked = store.get(id, true); $(id).onchange = () => store.set(id, $(id).checked); }
 
   // ---------- translation (Claude, on the viewer's own Claude account) ----------
   // Translation engine: the user's own Claude API key if set; inside claude.ai, the viewer's Claude account.
@@ -354,6 +364,7 @@ ${t}`;
   // ---------- settings ----------
   $("setBtn").onclick = () => { $("apiKey").value = apiKey(); $("setDlg").showModal(); };
   $("setForm").onsubmit = (e) => { e.preventDefault(); store.set("apiKey", $("apiKey").value.trim()); $("setDlg").close(); updateKeyHint(); };
+  $("closeSet").onclick = () => $("setDlg").close();
   $("delKey").onclick = () => { store.set("apiKey", ""); $("apiKey").value = ""; updateKeyHint(); };
   function updateKeyHint() { $("setBtn").textContent = apiKey() ? "Ayarlar" : "Ayarlar ⚠"; }
 
@@ -362,7 +373,7 @@ ${t}`;
 
   // Keyboard dictation: when the text stops changing for a moment, translate it.
   let autoTimer;
-  function autoGrow() { text.style.height = "auto"; text.style.height = Math.min(text.scrollHeight, 140) + "px"; }
+  function autoGrow() { text.style.height = "auto"; text.style.height = Math.min(text.scrollHeight, 8 * parseFloat(getComputedStyle(document.documentElement).fontSize)) + "px"; }
   text.addEventListener("input", () => {
     autoGrow(); store.set("draft", text.value);
     clearTimeout(autoTimer);
@@ -422,6 +433,13 @@ ${t}`;
   }
   if (!SR) hint.textContent = DICTATION_HINT;
   else hint.textContent = "Sürekli dinlemek için 🎤 tuşuna basın.";
+
+  // Text size: A− / A+ in the header, remembered on this phone.
+  let scale = store.get("scale", 1);
+  function applyScale() { document.documentElement.style.setProperty("--scale", scale); store.set("scale", scale); autoGrow(); }
+  $("bigger").onclick = () => { scale = Math.min(1.8, Math.round((scale + 0.1) * 10) / 10); applyScale(); };
+  $("smaller").onclick = () => { scale = Math.max(0.7, Math.round((scale - 0.1) * 10) / 10); applyScale(); };
+  applyScale();
 
   fillSelects(); saveLangs(); updateKeyHint();
   if ("serviceWorker" in navigator && location.protocol === "https:") navigator.serviceWorker.register("sw.js").catch(() => {});
