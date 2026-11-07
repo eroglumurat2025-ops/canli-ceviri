@@ -124,6 +124,7 @@ input[type=checkbox] { width: 1.3em; height: 1.3em; accent-color: var(--me); fle
     <button class="icon-btn" id="smaller" type="button" aria-label="Yazıyı küçült">A−</button>
     <button class="icon-btn" id="bigger" type="button" aria-label="Yazıyı büyüt"><b>A+</b></button>
     <button class="icon-btn" id="meetBtn" type="button">Toplantı</button>
+    <button class="icon-btn" id="fileBtn" type="button">Ses dosyası</button>
     <button class="icon-btn" id="setBtn" type="button">Ayarlar</button>
   </div>
 </header>
@@ -223,6 +224,30 @@ input[type=checkbox] { width: 1.3em; height: 1.3em; accent-color: var(--me); fle
   <h2 style="margin-top:16px">Harcama</h2>
   <div id="costBox" class="summary"></div>
   <div class="btns" style="margin-top:14px"><button type="button" class="primary" id="closeMeet">Kapat</button></div>
+</dialog>
+
+<dialog id="fileDlg">
+  <h2>Ses dosyasını çevir</h2>
+  <p class="hint" style="margin:0 0 8px">Telefonunuzdaki bir ses kaydını (WhatsApp sesli mesajı, toplantı kaydı, video sesi…) seçin. Önce yazıya dökülür, sonra çevrilir.</p>
+  <div class="row"><label for="fileFrom">Kayıttaki dil</label><select id="fileFrom"></select></div>
+  <div class="row"><label for="fileTo">Çevrilecek dil</label><select id="fileTo"></select></div>
+  <div class="btns setgroup">
+    <button type="button" class="primary" id="filePick">Ses dosyası seç</button>
+    <input type="file" id="fileInput" accept="audio/*,video/*,.m4a,.mp3,.wav,.ogg,.opus,.aac,.amr,.webm,.mp4,.3gp" hidden>
+  </div>
+  <div id="fileStatus" class="hint" style="margin-top:8px"></div>
+  <div id="fileOutBox" hidden>
+    <h2 style="margin-top:12px">Çeviri</h2>
+    <div id="fileTr" class="summary" style="white-space:pre-wrap"></div>
+    <details style="margin-top:8px"><summary>Orijinal metin (yazıya dökülmüş hali)</summary><div id="fileOrig" class="summary" style="white-space:pre-wrap"></div></details>
+    <div class="btns" style="margin-top:8px">
+      <button type="button" class="icon-btn" id="fileSpeak">🔊 Oku</button>
+      <button type="button" class="icon-btn" id="fileShare">Paylaş</button>
+      <button type="button" class="icon-btn" id="fileSum">Özet çıkar</button>
+    </div>
+    <div id="fileSumOut" class="summary" hidden style="white-space:pre-wrap"></div>
+  </div>
+  <div class="btns" style="margin-top:14px"><button type="button" class="primary" id="closeFile">Kapat</button></div>
 </dialog>
 
 <script>
@@ -381,7 +406,7 @@ input[type=checkbox] { width: 1.3em; height: 1.3em; accent-color: var(--me); fle
   }
   const oaKey = () => (store.get("oaKey", "") || "").trim();
 
-  async function askClaude(p, onText) {
+  async function askClaude(p, onText, maxTokens = 2000) {
     const key = apiKey();
     if (key) {
       const r = await fetch("https://api.anthropic.com/v1/messages", {
@@ -393,7 +418,7 @@ input[type=checkbox] { width: 1.3em; height: 1.3em; accent-color: var(--me); fle
           "anthropic-dangerous-direct-browser-access": "true",
         },
         body: JSON.stringify({
-          model: model(), max_tokens: 2000, stream: true,
+          model: model(), max_tokens: maxTokens, stream: true,
           thinking: { type: model() === MODELS.high ? "between_tools" : "disabled" }, output_config: { effort: "low" },
           messages: [{ role: "user", content: p }],
         }),
@@ -1059,6 +1084,129 @@ ${t}`, (p) => { out.textContent = p; });
     if (browserMicClick) browserMicClick();
   };
   idleHint();
+
+  // ---------- audio file: transcribe (any language) and translate ----------
+  // Small files go to OpenAI as they are; big or long ones are decoded here and sent in 10-minute pieces,
+  // because the transcription endpoint takes at most 25 MB per request.
+  const MAX_DIRECT = 24 * 1024 * 1024, PIECE_SEC = 600;
+  const fileState = { orig: "", tr: "", toName: "Türkçe" };
+  function fillFileLangs() {
+    const from = $("fileFrom"), to = $("fileTo");
+    from.textContent = ""; to.textContent = "";
+    from.append(new Option("Otomatik algıla", ""));
+    for (const l of langs()) { from.append(new Option(l.name, l.name)); to.append(new Option(l.name, l.name)); }
+    from.value = store.get("fileFrom", "Çince"); to.value = store.get("fileTo", "Türkçe");
+    if (to.selectedIndex < 0) to.value = "Türkçe";
+  }
+  $("fileBtn").onclick = () => { fillFileLangs(); $("fileDlg").showModal(); };
+  $("closeFile").onclick = () => $("fileDlg").close();
+  $("fileFrom").onchange = () => store.set("fileFrom", $("fileFrom").value);
+  $("fileTo").onchange = () => store.set("fileTo", $("fileTo").value);
+  $("filePick").onclick = () => {
+    if (!oaKey()) { $("fileStatus").textContent = "Ses dosyası için Ayarlar'a OpenAI anahtarı girilmeli."; return; }
+    if (!apiKey()) { $("fileStatus").textContent = "Çeviri için Ayarlar'a Claude anahtarı girilmeli."; return; }
+    $("fileInput").value = ""; $("fileInput").click();
+  };
+  const fileStatus = (t) => { $("fileStatus").textContent = t; };
+
+  async function transcribeFile(blob, name, langCode, seconds) {
+    const fd = new FormData();
+    fd.append("file", blob, name); fd.append("model", "gpt-transcribe");
+    if (langCode) fd.append("languages[]", langCode);
+    const r = await fetch("https://api.openai.com/v1/audio/transcriptions", { method: "POST", headers: { Authorization: "Bearer " + oaKey() }, body: fd });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.error?.message || "Ses tanıma hatası (" + r.status + ")");
+    if (seconds) addCost("openai", seconds * PRICES["gpt-transcribe"]);
+    return (data.text || "").trim();
+  }
+  async function decodeFile(file) {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    try { return await ctx.decodeAudioData(await file.arrayBuffer()); }
+    finally { try { ctx.close(); } catch {} }
+  }
+  function monoPiece(buf, startSec, endSec) {
+    const rate = buf.sampleRate, a = Math.floor(startSec * rate), b = Math.min(buf.length, Math.floor(endSec * rate));
+    const out = new Float32Array(b - a);
+    for (let ch = 0; ch < buf.numberOfChannels; ch++) { const d = buf.getChannelData(ch); for (let i = a; i < b; i++) out[i - a] += d[i] / buf.numberOfChannels; }
+    return downsample(out, rate, 16000);
+  }
+  // Split long text at sentence ends so each Claude call stays small.
+  function splitText(t, max = 2500) {
+    const parts = []; let cur = "";
+    for (const s of t.match(/[^.!?。！？\n]+[.!?。！？\n]*\s*/g) || [t]) {
+      if (cur && (cur + s).length > max) { parts.push(cur); cur = ""; }
+      cur += s;
+    }
+    if (cur.trim()) parts.push(cur);
+    return parts;
+  }
+  $("fileInput").onchange = async () => {
+    const file = $("fileInput").files[0]; if (!file) return;
+    const fromName = $("fileFrom").value, toName = $("fileTo").value;
+    const code = fromName ? (byName(fromName).code || "").slice(0, 2).toLowerCase() : "";
+    $("filePick").disabled = true; $("fileOutBox").hidden = true; $("fileSumOut").hidden = true;
+    fileState.orig = ""; fileState.tr = ""; fileState.toName = toName;
+    try {
+      // 1. speech → text
+      let orig = "";
+      if (file.size <= MAX_DIRECT) {
+        fileStatus("⏳ Ses yazıya dökülüyor… (" + (file.size / 1048576).toFixed(1) + " MB)");
+        let secs = 0; try { const a = new Audio(URL.createObjectURL(file)); await new Promise((ok) => { a.onloadedmetadata = ok; a.onerror = ok; setTimeout(ok, 3000); }); secs = isFinite(a.duration) ? a.duration : 0; } catch {}
+        try { orig = await transcribeFile(file, file.name || "ses.m4a", code, secs); }
+        catch (e) {
+          // Format OpenAI does not take (e.g. AMR): decode here and send as WAV instead.
+          if (!/format|unsupported|invalid file/i.test(e.message)) throw e;
+          orig = "";
+        }
+      }
+      if (!orig) {
+        fileStatus("⏳ Dosya hazırlanıyor…");
+        const buf = await decodeFile(file);
+        const n = Math.ceil(buf.duration / PIECE_SEC), texts = [];
+        for (let i = 0; i < n; i++) {
+          fileStatus(`⏳ Ses yazıya dökülüyor… ${i + 1} / ${n} parça`);
+          const pcm = monoPiece(buf, i * PIECE_SEC, (i + 1) * PIECE_SEC);
+          texts.push(await transcribeFile(encodeWav([pcm], 16000), "parca" + (i + 1) + ".wav", code, pcm.length / 16000));
+        }
+        orig = texts.join("\n");
+      }
+      if (!orig || HALLUCINATIONS.test(orig) && orig.length < 60) { fileStatus("Kayıtta konuşma bulunamadı."); return; }
+      fileState.orig = orig; $("fileOrig").textContent = orig;
+      // 2. text → translation, piece by piece, shown as it streams
+      $("fileOutBox").hidden = false; $("fileTr").textContent = "";
+      const toL = byName(toName), parts = splitText(orig), done = [];
+      for (let i = 0; i < parts.length; i++) {
+        fileStatus(parts.length > 1 ? `⏳ Çevriliyor… ${i + 1} / ${parts.length}` : "⏳ Çevriliyor…");
+        const out = await askClaude(`Translate this transcript of an audio recording into ${toL.en}.${fromName ? " The recording is in " + byName(fromName).en + "." : ""}
+It comes from speech recognition: fix obvious recognition mistakes and add punctuation silently. Keep names, numbers, prices and dates exact. If a passage is too garbled to understand, translate your best guess and mark it with (?).
+${done.length ? "The previous part (already translated, for context only):\n" + parts[i - 1].slice(-600) + "\n" : ""}
+Reply with the translation only, as plain text with paragraphs, no notes.
+
+Transcript:
+${parts[i]}`, (p) => { $("fileTr").textContent = [...done, p].join("\n\n"); }, 8000);
+        done.push(out.trim()); $("fileTr").textContent = done.join("\n\n");
+      }
+      fileState.tr = done.join("\n\n");
+      fileStatus("✓ Bitti: " + (file.name || "ses dosyası"));
+    } catch (e) {
+      fileStatus("Olmadı: " + (ERRORS[e?.code] || e?.message || "bilinmeyen hata") + (e?.name === "EncodingError" ? " (Bu dosya biçimi açılamadı. MP3, M4A, WAV veya OGG deneyin.)" : ""));
+    } finally { $("filePick").disabled = false; }
+  };
+  $("fileSpeak").onclick = () => speak(fileState.tr, fileState.toName);
+  $("fileShare").onclick = async () => {
+    const t = fileState.tr + "\n\n---\nOrijinal:\n" + fileState.orig;
+    try { if (navigator.share) { await navigator.share({ title: "Ses dosyası çevirisi", text: t }); return; } } catch (e) { if (e?.name === "AbortError") return; }
+    try { await navigator.clipboard.writeText(t); $("fileShare").textContent = "Kopyalandı"; } catch { $("fileShare").textContent = "Paylaşılamadı"; }
+  };
+  $("fileSum").onclick = async () => {
+    const out = $("fileSumOut"); out.hidden = false; out.textContent = "Özet hazırlanıyor…";
+    try {
+      out.textContent = await askClaude(`Summarize this audio recording for the user in Turkish, plain text without markdown symbols, with headings "Özet:", "Önemli noktalar:" (bullet lines starting with "• "), "Rakamlar ve tarihler:" (bullets or "Yok").
+
+Transcript (original language):
+${fileState.orig.slice(0, 60000)}`, (p) => { out.textContent = p; }, 3000);
+    } catch (e) { out.textContent = "Özet çıkarılamadı: " + (ERRORS[e?.code] || e?.message || ""); }
+  };
 
   // Text size: A− / A+ in the header, remembered on this phone.
   let scale = store.get("scale", 1);
